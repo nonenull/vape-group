@@ -1,0 +1,104 @@
+services:
+  # MySQL 数据库
+  mysql:
+    image: mysql:8.0
+    container_name: vape-group-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: vape_group
+      MYSQL_USER: vape_user
+      MYSQL_PASSWORD: vape_password
+      TZ: 'Asia/Shanghai'
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/migrations:/docker-entrypoint-initdb.d
+    networks:
+      - vape-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # Golang 后端服务
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vape-group-backend
+    environment:
+      PORT: 8088
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: vape_user
+      DB_PASS: vape_password
+      DB_NAME: vape_group
+      JWT_SECRET: vape-group-jwt-secret-key
+    ports:
+      - "8088:8088"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - vape-network
+    volumes:
+      - ./backend:/app
+    restart: unless-stopped
+
+  # 商城前端服务
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vape-group-frontend
+    environment:
+      VITE_API_URL: http://backend:8088
+    ports:
+      - "5173:80"
+    networks:
+      - vape-network
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # 后台管理前端服务
+  admin:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+    container_name: vape-group-admin
+    environment:
+      VITE_API_URL: http://backend:8088
+    ports:
+      - "5174:80"
+    networks:
+      - vape-network
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Nginx 反向代理
+  nginx:
+    image: nginx:alpine
+    container_name: vape-group-nginx
+    ports:
+      - "8880:80"
+      - "8843:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    networks:
+      - vape-network
+    depends_on:
+      - backend
+      - frontend
+      - admin
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+
+networks:
+  vape-network:
+    driver: bridge

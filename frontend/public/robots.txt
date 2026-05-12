@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+Disallow: /cart
+Disallow: /checkout
+Disallow: /admin
+
+Sitemap: https://tenant1.vape-group.com/sitemap.xml
