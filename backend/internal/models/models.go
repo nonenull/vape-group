@@ -254,7 +254,7 @@ func EnsureDevTenants(db *gorm.DB, domains []string) error {
 	return nil
 }
 
-func EnsureProductSlugs(db *gorm.DB, slugGenerator func(uint, string) (string, error)) error {
+func EnsureProductSlugs(db *gorm.DB, slugGenerator func(uint, string, string) (string, error)) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		var products []Product
 		if err := tx.Order("id asc").Find(&products).Error; err != nil {
@@ -266,7 +266,7 @@ func EnsureProductSlugs(db *gorm.DB, slugGenerator func(uint, string) (string, e
 				continue
 			}
 
-			slug, err := slugGenerator(product.ID, product.BaseName)
+			slug, err := slugGenerator(product.ID, product.BaseName, product.SKU)
 			if err != nil {
 				return err
 			}

@@ -1,45 +1,23 @@
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: vape-group-mysql-dev
-    environment:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: vape_group
-      MYSQL_USER: vape_user
-      MYSQL_PASSWORD: vape_password
-      TZ: Asia/Shanghai
-    ports:
-      - "3307:3306"
-    volumes:
-      - mysql_data_dev:/var/lib/mysql
-      - ./backend/migrations:/docker-entrypoint-initdb.d:ro
-    networks:
-      - wp_network
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 20s
-      retries: 10
-
   backend:
     image: golang:1.19-alpine
     container_name: vape-group-backend-dev
     working_dir: /app
+    env_file: ".env"
     environment:
       PORT: 8088
-      DB_HOST: mysql
-      DB_PORT: 3306
-      DB_USER: vape_user
-      DB_PASS: vape_password
-      DB_NAME: vape_group
+
+      # DB_HOST: mysql
+      # DB_PORT: 3306
+      # DB_USER: vape_user
+      # DB_PASS: vape_password
+      # DB_NAME: vape_group
       JWT_SECRET: vape-group-jwt-secret-key
       TZ: Asia/Shanghai
       UPLOAD_DIR: /uploads
     command: sh -c "go mod download && go run ./cmd/main.go"
     ports:
       - "8088:8088"
-    depends_on:
-      mysql:
-        condition: service_healthy
     volumes:
       - ./backend:/app
       - ./uploads:/uploads
@@ -107,6 +85,6 @@ volumes:
   admin_node_modules:
 
 networks:
-  default:
+  wp_network:
     name: wp_network
     external: true

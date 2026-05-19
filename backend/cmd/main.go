@@ -46,8 +46,8 @@ func main() {
 	if err := models.EnsureSharedCategories(db); err != nil {
 		log.Fatal("Failed to ensure shared categories:", err)
 	}
-	if err := models.EnsureProductSlugs(db, func(productID uint, baseName string) (string, error) {
-		return api.GenerateProductSlugForModel(db, productID, baseName)
+	if err := models.EnsureProductSlugs(db, func(productID uint, baseName string, sku string) (string, error) {
+		return api.GenerateProductSlugForModel(db, productID, baseName, sku)
 	}); err != nil {
 		log.Fatal("Failed to ensure product slugs:", err)
 	}

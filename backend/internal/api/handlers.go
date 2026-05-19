@@ -351,14 +351,24 @@ func sanitizeUploadFilename(originalName string) string {
 
 func sanitizeSlug(value string) string {
 	result := sanitizeUploadFilename(value)
-	if result == "" {
-		return "product"
+	if result == "" || result == "image" {
+		return ""
 	}
 	return result
 }
 
-func generateProductSlug(db *gorm.DB, productID uint, baseName string) (string, error) {
+func generateProductSlug(db *gorm.DB, productID uint, baseName string, sku string) (string, error) {
 	baseSlug := sanitizeSlug(baseName)
+	if baseSlug == "" {
+		baseSlug = sanitizeSlug(sku)
+	}
+	if baseSlug == "" {
+		if productID > 0 {
+			baseSlug = "product-" + strconv.FormatUint(uint64(productID), 10)
+		} else {
+			baseSlug = "product"
+		}
+	}
 	slug := baseSlug
 	suffix := 2
 
@@ -379,8 +389,8 @@ func generateProductSlug(db *gorm.DB, productID uint, baseName string) (string, 
 	}
 }
 
-func GenerateProductSlugForModel(db *gorm.DB, productID uint, baseName string) (string, error) {
-	return generateProductSlug(db, productID, baseName)
+func GenerateProductSlugForModel(db *gorm.DB, productID uint, baseName string, sku string) (string, error) {
+	return generateProductSlug(db, productID, baseName, sku)
 }
 
 func normalizeDomain(value string) string {
@@ -1033,7 +1043,6 @@ func productPayloadToModel(payload productPayload, existing *models.Product) mod
 	}
 
 	model.SKU = payload.SKU
-	model.Slug = existing.Slug
 	model.BaseName = payload.BaseName
 	model.BasePrice = payload.BasePrice
 	model.BaseStockQuantity = payload.BaseStockQuantity
@@ -2122,7 +2131,7 @@ func CreateProductAdminHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		product := productPayloadToModel(payload, nil)
-		slug, err := generateProductSlug(db, 0, product.BaseName)
+		slug, err := generateProductSlug(db, 0, product.BaseName, product.SKU)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate product slug"})
 			return
@@ -2158,7 +2167,7 @@ func UpdateProductAdminHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		product = productPayloadToModel(payload, &product)
-		slug, err := generateProductSlug(db, product.ID, product.BaseName)
+		slug, err := generateProductSlug(db, product.ID, product.BaseName, product.SKU)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate product slug"})
 			return
