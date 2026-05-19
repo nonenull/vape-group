@@ -1,26 +1,4 @@
 services:
-  # MySQL 数据库
-  mysql:
-    image: mysql:8.0
-    container_name: vape-group-mysql
-    environment:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: vape_group
-      MYSQL_USER: vape_user
-      MYSQL_PASSWORD: vape_password
-      TZ: 'Asia/Shanghai'
-    ports:
-      - "3307:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./backend/migrations:/docker-entrypoint-initdb.d
-    networks:
-      - wp_network
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 20s
-      retries: 10
-
   # Golang 后端服务
   backend:
     build:
