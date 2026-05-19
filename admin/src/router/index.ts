@@ -30,6 +30,11 @@ const router = createRouter({
       component: () => import('../views/TenantsView.vue'),
     },
     {
+      path: '/platform-settings',
+      name: 'platform-settings',
+      component: () => import('../views/PlatformSettingsView.vue'),
+    },
+    {
       path: '/orders',
       name: 'orders',
       component: () => import('../views/OrdersView.vue'),

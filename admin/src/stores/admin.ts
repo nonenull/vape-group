@@ -6,6 +6,7 @@ import {
   type CategoryRecord,
   orderRecords,
   type OrderRecord,
+  type PlatformConfigRecord,
   type ProductOverrideRecord,
   type ProductRecord,
   type TenantRecord,
@@ -17,6 +18,12 @@ export const useAdminStore = defineStore('admin', () => {
   const categories = ref<CategoryRecord[]>([])
   const brands = ref<BrandRecord[]>([])
   const overrides = ref<ProductOverrideRecord[]>([])
+  const platformConfig = ref<PlatformConfigRecord>({
+    id: 0,
+    lineContactUrl: '',
+    featuredCategoryIds: [],
+    featuredBrandIds: [],
+  })
   const orders = ref<OrderRecord[]>(structuredClone(orderRecords))
   const loading = ref(false)
 
@@ -41,6 +48,15 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
+  async function fetchPlatformConfig() {
+    loading.value = true
+    try {
+      platformConfig.value = await adminAPI.getPlatformConfig()
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function fetchProductOverride(productId: number, tenantId: number) {
     const override = await adminAPI.getProductOverride(productId, tenantId)
 
@@ -55,21 +71,15 @@ export const useAdminStore = defineStore('admin', () => {
     return override
   }
 
-  async function fetchCategories(tenantId: number) {
-    const result = await adminAPI.getCategories(tenantId)
-    categories.value = [
-      ...categories.value.filter((item) => item.tenantId !== tenantId),
-      ...result,
-    ]
+  async function fetchCategories() {
+    const result = await adminAPI.getCategories()
+    categories.value = result
     return result
   }
 
-  async function fetchBrands(tenantId: number) {
-    const result = await adminAPI.getBrands(tenantId)
-    brands.value = [
-      ...brands.value.filter((item) => item.tenantId !== tenantId),
-      ...result,
-    ]
+  async function fetchBrands() {
+    const result = await adminAPI.getBrands()
+    brands.value = result
     return result
   }
 
@@ -86,10 +96,21 @@ export const useAdminStore = defineStore('admin', () => {
       name: payload.name,
       isActive: payload.isActive,
       theme: payload.theme,
+      homeTemplate: payload.homeTemplate,
+      homeModuleOrder: payload.homeModuleOrder,
+      primaryBrandId: payload.primaryBrandId,
       previewImage: payload.previewImage,
       logoImage: payload.logoImage,
       accentColor: payload.accentColor,
+      accentStrongColor: payload.accentStrongColor,
       surfaceColor: payload.surfaceColor,
+      pageBgColor: payload.pageBgColor,
+      cardBgColor: payload.cardBgColor,
+      textColor: payload.textColor,
+      mutedTextColor: payload.mutedTextColor,
+      borderColor: payload.borderColor,
+      heroBgColor: payload.heroBgColor,
+      tagBgColor: payload.tagBgColor,
       heroTitle: payload.heroTitle,
       tagline: payload.tagline,
       announcement: payload.announcement,
@@ -101,6 +122,16 @@ export const useAdminStore = defineStore('admin', () => {
     if (index >= 0) {
       tenants.value[index] = updated
     }
+  }
+
+  async function updatePlatformConfig(payload: PlatformConfigRecord) {
+    const updated = await adminAPI.updatePlatformConfig({
+      lineContactUrl: payload.lineContactUrl,
+      featuredCategoryIds: payload.featuredCategoryIds,
+      featuredBrandIds: payload.featuredBrandIds,
+    })
+    platformConfig.value = updated
+    return updated
   }
 
   async function deleteTenant(tenantId: number) {
@@ -146,14 +177,14 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
-  async function createCategory(tenantId: number, payload: Omit<CategoryRecord, 'id' | 'tenantId'>) {
-    const created = await adminAPI.createCategory(tenantId, payload)
+  async function createCategory(payload: Omit<CategoryRecord, 'id'>) {
+    const created = await adminAPI.createCategory(payload)
     categories.value.unshift(created)
     return created
   }
 
   async function updateCategory(payload: CategoryRecord) {
-    const updated = await adminAPI.updateCategory(payload.tenantId, payload.id, {
+    const updated = await adminAPI.updateCategory(payload.id, {
       name: payload.name,
       parentId: payload.parentId,
       sortOrder: payload.sortOrder,
@@ -165,19 +196,19 @@ export const useAdminStore = defineStore('admin', () => {
     return updated
   }
 
-  async function deleteCategory(tenantId: number, categoryId: number) {
-    await adminAPI.deleteCategory(tenantId, categoryId)
+  async function deleteCategory(categoryId: number) {
+    await adminAPI.deleteCategory(categoryId)
     categories.value = categories.value.filter((item) => item.id !== categoryId)
   }
 
-  async function createBrand(tenantId: number, payload: Omit<BrandRecord, 'id' | 'tenantId'>) {
-    const created = await adminAPI.createBrand(tenantId, payload)
+  async function createBrand(payload: Omit<BrandRecord, 'id'>) {
+    const created = await adminAPI.createBrand(payload)
     brands.value.unshift(created)
     return created
   }
 
   async function updateBrand(payload: BrandRecord) {
-    const updated = await adminAPI.updateBrand(payload.tenantId, payload.id, {
+    const updated = await adminAPI.updateBrand(payload.id, {
       name: payload.name,
       logoUrl: payload.logoUrl,
       description: payload.description,
@@ -189,8 +220,8 @@ export const useAdminStore = defineStore('admin', () => {
     return updated
   }
 
-  async function deleteBrand(tenantId: number, brandId: number) {
-    await adminAPI.deleteBrand(tenantId, brandId)
+  async function deleteBrand(brandId: number) {
+    await adminAPI.deleteBrand(brandId)
     brands.value = brands.value.filter((item) => item.id !== brandId)
   }
 
@@ -258,18 +289,17 @@ export const useAdminStore = defineStore('admin', () => {
     return overrides.value.find((item) => item.productId === productId && item.tenantId === tenantId)
   }
 
-  function getCategoriesByTenant(tenantId: number) {
+  function getCategories() {
     return categories.value
-      .filter((item) => item.tenantId === tenantId)
       .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)
   }
 
-  function getBrandsByTenant(tenantId: number) {
-    return brands.value.filter((item) => item.tenantId === tenantId)
+  function getBrands() {
+    return brands.value
   }
 
   async function bootstrap() {
-    await Promise.all([fetchTenants(), fetchProducts()])
+    await Promise.all([fetchTenants(), fetchProducts(), fetchPlatformConfig()])
   }
 
   return {
@@ -278,17 +308,20 @@ export const useAdminStore = defineStore('admin', () => {
     categories,
     brands,
     overrides,
+    platformConfig,
     orders,
     loading,
     activeTenants,
     visibleOverrides,
     fetchTenants,
     fetchProducts,
+    fetchPlatformConfig,
     fetchProductOverride,
     fetchCategories,
     fetchBrands,
     createTenant,
     updateTenant,
+    updatePlatformConfig,
     deleteTenant,
     createProduct,
     updateProduct,
@@ -304,8 +337,8 @@ export const useAdminStore = defineStore('admin', () => {
     updateOrderStatus,
     getTenantName,
     getOverride,
-    getCategoriesByTenant,
-    getBrandsByTenant,
+    getCategories,
+    getBrands,
     bootstrap,
   }
 })

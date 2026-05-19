@@ -22,10 +22,21 @@ export interface TenantRecord {
   name: string
   isActive: boolean
   theme: string
+  homeTemplate?: string
+  homeModuleOrder?: string[]
+  primaryBrandId?: number | null
   previewImage: string
   logoImage: string
   accentColor?: string
+  accentStrongColor?: string
   surfaceColor?: string
+  pageBgColor?: string
+  cardBgColor?: string
+  textColor?: string
+  mutedTextColor?: string
+  borderColor?: string
+  heroBgColor?: string
+  tagBgColor?: string
   heroTitle?: string
   tagline?: string
   announcement?: string
@@ -34,9 +45,17 @@ export interface TenantRecord {
   seoDescription: string
 }
 
+export interface PlatformConfigRecord {
+  id: number
+  lineContactUrl: string
+  featuredCategoryIds: number[]
+  featuredBrandIds: number[]
+}
+
 export interface ProductRecord {
   id: number
   sku: string
+  slug?: string
   baseName: string
   basePrice: number
   baseStockQuantity: number
@@ -63,7 +82,6 @@ export interface ProductRecord {
 
 export interface CategoryRecord {
   id: number
-  tenantId: number
   name: string
   parentId?: number | null
   sortOrder: number
@@ -71,7 +89,6 @@ export interface CategoryRecord {
 
 export interface BrandRecord {
   id: number
-  tenantId: number
   name: string
   logoUrl?: string
   description?: string

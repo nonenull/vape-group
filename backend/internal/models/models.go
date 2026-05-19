@@ -24,6 +24,16 @@ type Tenant struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// PlatformConfig 平台级配置表
+type PlatformConfig struct {
+	ID                  uint      `gorm:"primaryKey" json:"id"`
+	LineContactURL      string    `gorm:"type:varchar(1024)" json:"line_contact_url"`
+	FeaturedCategoryIDs UIntArray `gorm:"type:json" json:"featured_category_ids"`
+	FeaturedBrandIDs    UIntArray `gorm:"type:json" json:"featured_brand_ids"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
 // User 用户表
 type User struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`
@@ -42,6 +52,7 @@ type User struct {
 type Product struct {
 	ID                  uint      `gorm:"primaryKey" json:"id"`
 	SKU                 string    `gorm:"type:varchar(255);uniqueIndex" json:"sku"`
+	Slug                string    `gorm:"type:varchar(255);uniqueIndex" json:"slug"`
 	BaseName            string    `json:"base_name"`
 	BasePrice           float64   `json:"base_price"`
 	BaseStockQuantity   int       `json:"base_stock_quantity"`
@@ -89,7 +100,7 @@ type TenantProductOverride struct {
 // Category 分类表
 type Category struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
-	TenantID  uint      `gorm:"index" json:"tenant_id"`
+	TenantID  *uint     `gorm:"index" json:"tenant_id"`
 	Name      string    `json:"name"`
 	ParentID  *uint     `json:"parent_id"`
 	SortOrder int       `json:"sort_order"`
@@ -101,13 +112,11 @@ type Category struct {
 // Brand 品牌表
 type Brand struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
-	TenantID    uint      `gorm:"index" json:"tenant_id"`
 	Name        string    `json:"name"`
 	LogoURL     *string   `json:"logo_url"`
 	Description *string   `json:"description"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
-	Tenant      *Tenant   `json:"tenant,omitempty"`
 }
 
 // Order 订单表
@@ -166,6 +175,41 @@ func (j *JSONArray) Scan(value interface{}) error {
 	return json.Unmarshal(bytes, &j)
 }
 
+// UIntArray 自定义 uint 数组 JSON 字段类型
+type UIntArray []uint
+
+func (u UIntArray) Value() (driver.Value, error) {
+	return json.Marshal(u)
+}
+
+func (u *UIntArray) Scan(value interface{}) error {
+	if value == nil {
+		*u = UIntArray{}
+		return nil
+	}
+
+	switch typed := value.(type) {
+	case []byte:
+		if len(typed) == 0 {
+			*u = UIntArray{}
+			return nil
+		}
+		return json.Unmarshal(typed, u)
+	case string:
+		if typed == "" {
+			*u = UIntArray{}
+			return nil
+		}
+		return json.Unmarshal([]byte(typed), u)
+	default:
+		bytes, err := json.Marshal(typed)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(bytes, u)
+	}
+}
+
 // InitDB 初始化数据库连接
 func InitDB(cfg *config.Config) (*gorm.DB, error) {
 	dsn := cfg.DBUser + ":" + cfg.DBPass + "@tcp(" + cfg.DBHost + ":" + cfg.DBPort + ")/" + cfg.DBName + "?charset=utf8mb4&parseTime=True&loc=Local"
@@ -208,4 +252,254 @@ func EnsureDevTenants(db *gorm.DB, domains []string) error {
 	}
 
 	return nil
+}
+
+func EnsureProductSlugs(db *gorm.DB, slugGenerator func(uint, string) (string, error)) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		var products []Product
+		if err := tx.Order("id asc").Find(&products).Error; err != nil {
+			return err
+		}
+
+		for _, product := range products {
+			if strings.TrimSpace(product.Slug) != "" {
+				continue
+			}
+
+			slug, err := slugGenerator(product.ID, product.BaseName)
+			if err != nil {
+				return err
+			}
+
+			if err := tx.Model(&Product{}).Where("id = ?", product.ID).Update("slug", slug).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+func EnsureSharedCategories(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		var categories []Category
+		if err := tx.Order("parent_id asc, sort_order asc, id asc").Find(&categories).Error; err != nil {
+			return err
+		}
+		if len(categories) == 0 {
+			return nil
+		}
+
+		sharedByID := make(map[uint]Category)
+		legacyByID := make(map[uint]Category)
+		for _, category := range categories {
+			if category.TenantID == nil {
+				sharedByID[category.ID] = category
+				continue
+			}
+			legacyByID[category.ID] = category
+		}
+		if len(legacyByID) == 0 {
+			return nil
+		}
+
+		sharedSignatureCache := make(map[uint]string)
+		legacySignatureCache := make(map[uint]string)
+
+		var buildLegacySignature func(Category) string
+		buildLegacySignature = func(category Category) string {
+			if signature, ok := legacySignatureCache[category.ID]; ok {
+				return signature
+			}
+
+			signature := normalizeCategorySignatureSegment(category.Name)
+			if category.ParentID != nil {
+				if parent, ok := legacyByID[*category.ParentID]; ok {
+					parentSignature := buildLegacySignature(parent)
+					if parentSignature != "" {
+						signature = parentSignature + "/" + signature
+					}
+				}
+			}
+
+			legacySignatureCache[category.ID] = signature
+			return signature
+		}
+
+		var buildSharedSignature func(Category) string
+		buildSharedSignature = func(category Category) string {
+			if signature, ok := sharedSignatureCache[category.ID]; ok {
+				return signature
+			}
+
+			signature := normalizeCategorySignatureSegment(category.Name)
+			if category.ParentID != nil {
+				if parent, ok := sharedByID[*category.ParentID]; ok {
+					parentSignature := buildSharedSignature(parent)
+					if parentSignature != "" {
+						signature = parentSignature + "/" + signature
+					}
+				}
+			}
+
+			sharedSignatureCache[category.ID] = signature
+			return signature
+		}
+
+		sharedBySignature := make(map[string]Category)
+		for _, category := range categories {
+			if category.TenantID != nil {
+				continue
+			}
+			signature := buildSharedSignature(category)
+			if signature == "" {
+				continue
+			}
+			if _, exists := sharedBySignature[signature]; !exists {
+				sharedBySignature[signature] = category
+			}
+		}
+
+		legacyToShared := make(map[uint]uint)
+		var ensureSharedCategory func(Category) (uint, error)
+		ensureSharedCategory = func(category Category) (uint, error) {
+			if sharedID, ok := legacyToShared[category.ID]; ok {
+				return sharedID, nil
+			}
+
+			var parentSharedID *uint
+			if category.ParentID != nil {
+				if parent, ok := legacyByID[*category.ParentID]; ok {
+					sharedID, err := ensureSharedCategory(parent)
+					if err != nil {
+						return 0, err
+					}
+					parentSharedID = &sharedID
+				}
+			}
+
+			signature := buildLegacySignature(category)
+			if shared, ok := sharedBySignature[signature]; ok {
+				legacyToShared[category.ID] = shared.ID
+				return shared.ID, nil
+			}
+
+			shared := Category{
+				TenantID:  nil,
+				Name:      category.Name,
+				ParentID:  parentSharedID,
+				SortOrder: category.SortOrder,
+			}
+			if err := tx.Create(&shared).Error; err != nil {
+				return 0, err
+			}
+
+			sharedByID[shared.ID] = shared
+			sharedSignatureCache[shared.ID] = signature
+			sharedBySignature[signature] = shared
+			legacyToShared[category.ID] = shared.ID
+			return shared.ID, nil
+		}
+
+		for _, category := range categories {
+			if category.TenantID == nil {
+				continue
+			}
+			if _, err := ensureSharedCategory(category); err != nil {
+				return err
+			}
+		}
+
+		sharedNameByID := make(map[uint]string, len(sharedByID))
+		for id, category := range sharedByID {
+			sharedNameByID[id] = category.Name
+		}
+
+		var products []Product
+		if err := tx.Find(&products).Error; err != nil {
+			return err
+		}
+		for _, product := range products {
+			if !remapProductCategory(product.Specifications, legacyToShared, sharedNameByID) {
+				continue
+			}
+			if err := tx.Model(&product).Update("specifications", product.Specifications).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+func normalizeCategorySignatureSegment(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
+}
+
+func remapProductCategory(specs JSONMap, legacyToShared map[uint]uint, sharedNameByID map[uint]string) bool {
+	if specs == nil {
+		return false
+	}
+
+	categoryID, ok := jsonMapUint(specs, "categoryId")
+	if !ok {
+		return false
+	}
+
+	sharedID, ok := legacyToShared[categoryID]
+	if !ok || sharedID == categoryID {
+		return false
+	}
+
+	specs["categoryId"] = sharedID
+	if name, exists := sharedNameByID[sharedID]; exists {
+		specs["category"] = name
+	}
+	return true
+}
+
+func jsonMapUint(source JSONMap, key string) (uint, bool) {
+	if source == nil {
+		return 0, false
+	}
+
+	value, exists := source[key]
+	if !exists || value == nil {
+		return 0, false
+	}
+
+	switch typed := value.(type) {
+	case uint:
+		if typed == 0 {
+			return 0, false
+		}
+		return typed, true
+	case uint64:
+		if typed == 0 {
+			return 0, false
+		}
+		return uint(typed), true
+	case int:
+		if typed <= 0 {
+			return 0, false
+		}
+		return uint(typed), true
+	case int64:
+		if typed <= 0 {
+			return 0, false
+		}
+		return uint(typed), true
+	case float64:
+		if typed <= 0 {
+			return 0, false
+		}
+		return uint(typed), true
+	case float32:
+		if typed <= 0 {
+			return 0, false
+		}
+		return uint(typed), true
+	default:
+		return 0, false
+	}
 }

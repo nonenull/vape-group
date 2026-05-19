@@ -30,8 +30,8 @@ onMounted(() => {
         <RouterLink to="/categories">分類</RouterLink>
         <RouterLink to="/brands">品牌</RouterLink>
         <RouterLink to="/tenants">租戶</RouterLink>
+        <RouterLink to="/platform-settings">平台配置</RouterLink>
         <RouterLink to="/orders">訂單</RouterLink>
-        <RouterLink to="/about">系統說明</RouterLink>
       </nav>
 
       <div class="sidebar-footer">

@@ -14,7 +14,7 @@ services:
       - mysql_data:/var/lib/mysql
       - ./backend/migrations:/docker-entrypoint-initdb.d:ro
     networks:
-      - vape-network
+      - wp_network
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       timeout: 20s
@@ -42,7 +42,7 @@ services:
       mysql:
         condition: service_healthy
     networks:
-      - vape-network
+      - wp_network
     volumes:
       - ./uploads:/uploads
     restart: unless-stopped
@@ -53,11 +53,12 @@ services:
       dockerfile: Dockerfile
     container_name: vape-group-frontend
     environment:
-      VITE_API_URL: http://backend:8088
+      NUXT_SERVER_API_BASE: http://backend:8088
+      NUXT_BUILD_DIR: /tmp/vape-group-frontend/.nuxt
     ports:
-      - "5173:80"
+      - "3000:3000"
     networks:
-      - vape-network
+      - wp_network
     depends_on:
       - backend
     restart: unless-stopped
@@ -72,7 +73,7 @@ services:
     ports:
       - "5174:80"
     networks:
-      - vape-network
+      - wp_network
     depends_on:
       - backend
     restart: unless-stopped
@@ -87,7 +88,7 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
     networks:
-      - vape-network
+      - wp_network
     depends_on:
       - backend
       - frontend
@@ -98,5 +99,6 @@ volumes:
   mysql_data:
 
 networks:
-  vape-network:
-    driver: bridge
+  default:
+    name: wp_network
+    external: true

@@ -1,6 +1,7 @@
 import type {
   BrandRecord,
   CategoryRecord,
+  PlatformConfigRecord,
   ProductOptionGroupRecord,
   ProductOverrideRecord,
   ProductRecord,
@@ -78,10 +79,21 @@ const mapTenant = (input: any): TenantRecord => ({
   name: input.name ?? '',
   isActive: Boolean(input.is_active ?? input.isActive),
   theme: input.theme ?? '',
+  homeTemplate: input.home_template ?? input.homeTemplate ?? '',
+  homeModuleOrder: input.home_module_order ?? input.homeModuleOrder ?? [],
+  primaryBrandId: input.primary_brand_id ?? input.primaryBrandId ?? null,
   previewImage: input.preview_image ?? input.previewImage ?? '',
   logoImage: input.logo_image ?? input.logoImage ?? '',
   accentColor: input.accent_color ?? input.accentColor ?? '',
+  accentStrongColor: input.accent_strong_color ?? input.accentStrongColor ?? '',
   surfaceColor: input.surface_color ?? input.surfaceColor ?? '',
+  pageBgColor: input.page_bg_color ?? input.pageBgColor ?? '',
+  cardBgColor: input.card_bg_color ?? input.cardBgColor ?? '',
+  textColor: input.text_color ?? input.textColor ?? '',
+  mutedTextColor: input.muted_text_color ?? input.mutedTextColor ?? '',
+  borderColor: input.border_color ?? input.borderColor ?? '',
+  heroBgColor: input.hero_bg_color ?? input.heroBgColor ?? '',
+  tagBgColor: input.tag_bg_color ?? input.tagBgColor ?? '',
   heroTitle: input.hero_title ?? input.heroTitle ?? '',
   tagline: input.tagline ?? '',
   announcement: input.announcement ?? '',
@@ -96,10 +108,21 @@ const tenantPayload = (payload: Omit<TenantRecord, 'id'>) => ({
   name: payload.name,
   is_active: payload.isActive,
   theme: payload.theme,
+  home_template: payload.homeTemplate,
+  home_module_order: payload.homeModuleOrder ?? [],
+  primary_brand_id: payload.primaryBrandId ?? null,
   preview_image: payload.previewImage,
   logo_image: payload.logoImage,
   accent_color: payload.accentColor,
+  accent_strong_color: payload.accentStrongColor,
   surface_color: payload.surfaceColor,
+  page_bg_color: payload.pageBgColor,
+  card_bg_color: payload.cardBgColor,
+  text_color: payload.textColor,
+  muted_text_color: payload.mutedTextColor,
+  border_color: payload.borderColor,
+  hero_bg_color: payload.heroBgColor,
+  tag_bg_color: payload.tagBgColor,
   hero_title: payload.heroTitle,
   tagline: payload.tagline,
   announcement: payload.announcement,
@@ -111,6 +134,7 @@ const tenantPayload = (payload: Omit<TenantRecord, 'id'>) => ({
 const mapProduct = (input: any): ProductRecord => ({
   id: Number(input.id),
   sku: input.sku ?? '',
+  slug: input.slug ?? '',
   baseName: input.base_name ?? input.baseName ?? '',
   basePrice: Number(input.base_price ?? input.basePrice ?? 0),
   baseStockQuantity: Number(input.base_stock_quantity ?? input.baseStockQuantity ?? 0),
@@ -200,7 +224,6 @@ const mapOverride = (input: any, tenantId = 0, productId = 0): ProductOverrideRe
 
 const mapCategory = (input: any): CategoryRecord => ({
   id: Number(input.id),
-  tenantId: Number(input.tenant_id ?? input.tenantId ?? 0),
   name: input.name ?? '',
   parentId: input.parent_id ?? input.parentId ?? null,
   sortOrder: Number(input.sort_order ?? input.sortOrder ?? 0),
@@ -208,10 +231,24 @@ const mapCategory = (input: any): CategoryRecord => ({
 
 const mapBrand = (input: any): BrandRecord => ({
   id: Number(input.id),
-  tenantId: Number(input.tenant_id ?? input.tenantId ?? 0),
   name: input.name ?? '',
   logoUrl: input.logo_url ?? input.logoUrl ?? '',
   description: input.description ?? '',
+})
+
+const mapPlatformConfig = (input: any): PlatformConfigRecord => ({
+  id: Number(input.id ?? 0),
+  lineContactUrl: input.line_contact_url ?? input.lineContactUrl ?? '',
+  featuredCategoryIds: Array.isArray(input.featured_category_ids ?? input.featuredCategoryIds)
+    ? (input.featured_category_ids ?? input.featuredCategoryIds)
+      .map((item: any) => Number(item))
+      .filter((item: number) => Number.isFinite(item) && item > 0)
+    : [],
+  featuredBrandIds: Array.isArray(input.featured_brand_ids ?? input.featuredBrandIds)
+    ? (input.featured_brand_ids ?? input.featuredBrandIds)
+      .map((item: any) => Number(item))
+      .filter((item: number) => Number.isFinite(item) && item > 0)
+    : [],
 })
 
 export const adminAPI = {
@@ -226,6 +263,19 @@ export const adminAPI = {
   },
   async getTenants() {
     return (await request<any[]>('/api/admin/tenants')).map(mapTenant)
+  },
+  async getPlatformConfig() {
+    return mapPlatformConfig(await request<any>('/api/admin/platform-config'))
+  },
+  async updatePlatformConfig(payload: Omit<PlatformConfigRecord, 'id'>) {
+    return mapPlatformConfig(await request<any>('/api/admin/platform-config', {
+      method: 'PUT',
+      body: JSON.stringify({
+        line_contact_url: payload.lineContactUrl,
+        featured_category_ids: payload.featuredCategoryIds,
+        featured_brand_ids: payload.featuredBrandIds,
+      }),
+    }))
   },
   async createTenant(payload: Omit<TenantRecord, 'id'>) {
     return mapTenant(await request<any>('/api/admin/tenants', {
@@ -293,11 +343,11 @@ export const adminAPI = {
       }),
     }))
   },
-  async getCategories(tenantId: number) {
-    return (await request<any[]>(`/api/admin/tenants/${tenantId}/categories`)).map(mapCategory)
+  async getCategories() {
+    return (await request<any[]>('/api/admin/categories')).map(mapCategory)
   },
-  async createCategory(tenantId: number, payload: Omit<CategoryRecord, 'id' | 'tenantId'>) {
-    return mapCategory(await request<any>(`/api/admin/tenants/${tenantId}/categories`, {
+  async createCategory(payload: Omit<CategoryRecord, 'id'>) {
+    return mapCategory(await request<any>('/api/admin/categories', {
       method: 'POST',
       body: JSON.stringify({
         name: payload.name,
@@ -306,8 +356,8 @@ export const adminAPI = {
       }),
     }))
   },
-  async updateCategory(tenantId: number, categoryId: number, payload: Omit<CategoryRecord, 'id' | 'tenantId'>) {
-    return mapCategory(await request<any>(`/api/admin/tenants/${tenantId}/categories/${categoryId}`, {
+  async updateCategory(categoryId: number, payload: Omit<CategoryRecord, 'id'>) {
+    return mapCategory(await request<any>(`/api/admin/categories/${categoryId}`, {
       method: 'PUT',
       body: JSON.stringify({
         name: payload.name,
@@ -316,16 +366,16 @@ export const adminAPI = {
       }),
     }))
   },
-  deleteCategory(tenantId: number, categoryId: number) {
-    return request<{ success: boolean }>(`/api/admin/tenants/${tenantId}/categories/${categoryId}`, {
+  deleteCategory(categoryId: number) {
+    return request<{ success: boolean }>(`/api/admin/categories/${categoryId}`, {
       method: 'DELETE',
     })
   },
-  async getBrands(tenantId: number) {
-    return (await request<any[]>(`/api/admin/tenants/${tenantId}/brands`)).map(mapBrand)
+  async getBrands() {
+    return (await request<any[]>('/api/admin/brands')).map(mapBrand)
   },
-  async createBrand(tenantId: number, payload: Omit<BrandRecord, 'id' | 'tenantId'>) {
-    return mapBrand(await request<any>(`/api/admin/tenants/${tenantId}/brands`, {
+  async createBrand(payload: Omit<BrandRecord, 'id'>) {
+    return mapBrand(await request<any>('/api/admin/brands', {
       method: 'POST',
       body: JSON.stringify({
         name: payload.name,
@@ -334,8 +384,8 @@ export const adminAPI = {
       }),
     }))
   },
-  async updateBrand(tenantId: number, brandId: number, payload: Omit<BrandRecord, 'id' | 'tenantId'>) {
-    return mapBrand(await request<any>(`/api/admin/tenants/${tenantId}/brands/${brandId}`, {
+  async updateBrand(brandId: number, payload: Omit<BrandRecord, 'id'>) {
+    return mapBrand(await request<any>(`/api/admin/brands/${brandId}`, {
       method: 'PUT',
       body: JSON.stringify({
         name: payload.name,
@@ -344,8 +394,8 @@ export const adminAPI = {
       }),
     }))
   },
-  deleteBrand(tenantId: number, brandId: number) {
-    return request<{ success: boolean }>(`/api/admin/tenants/${tenantId}/brands/${brandId}`, {
+  deleteBrand(brandId: number) {
+    return request<{ success: boolean }>(`/api/admin/brands/${brandId}`, {
       method: 'DELETE',
     })
   },

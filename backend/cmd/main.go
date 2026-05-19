@@ -28,6 +28,7 @@ func main() {
 	// 自动迁移表结构
 	if err := db.AutoMigrate(
 		&models.Tenant{},
+		&models.PlatformConfig{},
 		&models.User{},
 		&models.Product{},
 		&models.TenantProductOverride{},
@@ -41,6 +42,14 @@ func main() {
 
 	if err := models.EnsureDevTenants(db, cfg.DevTenantDomains); err != nil {
 		log.Fatal("Failed to ensure development tenants:", err)
+	}
+	if err := models.EnsureSharedCategories(db); err != nil {
+		log.Fatal("Failed to ensure shared categories:", err)
+	}
+	if err := models.EnsureProductSlugs(db, func(productID uint, baseName string) (string, error) {
+		return api.GenerateProductSlugForModel(db, productID, baseName)
+	}); err != nil {
+		log.Fatal("Failed to ensure product slugs:", err)
 	}
 
 	if err := os.MkdirAll(cfg.UploadDir, 0o755); err != nil {

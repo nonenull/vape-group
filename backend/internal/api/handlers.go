@@ -3,15 +3,17 @@ package api
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/xml"
 	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mozillazg/go-pinyin"
 	"github.com/vape-group/backend/config"
 	"github.com/vape-group/backend/internal/models"
 	"gorm.io/gorm"
@@ -23,10 +25,21 @@ type tenantPayload struct {
 	Name           string   `json:"name"`
 	IsActive       bool     `json:"is_active"`
 	Theme          string   `json:"theme"`
+	HomeTemplate   string   `json:"home_template"`
+	HomeModuleOrder []string `json:"home_module_order"`
+	PrimaryBrandID *uint    `json:"primary_brand_id"`
 	PreviewImage   string   `json:"preview_image"`
 	LogoImage      string   `json:"logo_image"`
 	AccentColor    string   `json:"accent_color"`
+	AccentStrongColor string `json:"accent_strong_color"`
 	SurfaceColor   string   `json:"surface_color"`
+	PageBgColor    string   `json:"page_bg_color"`
+	CardBgColor    string   `json:"card_bg_color"`
+	TextColor      string   `json:"text_color"`
+	MutedTextColor string   `json:"muted_text_color"`
+	BorderColor    string   `json:"border_color"`
+	HeroBgColor    string   `json:"hero_bg_color"`
+	TagBgColor     string   `json:"tag_bg_color"`
 	HeroTitle      string   `json:"hero_title"`
 	Tagline        string   `json:"tagline"`
 	Announcement   string   `json:"announcement"`
@@ -42,16 +55,40 @@ type tenantResponse struct {
 	Name           string   `json:"name"`
 	IsActive       bool     `json:"is_active"`
 	Theme          string   `json:"theme"`
+	HomeTemplate   string   `json:"home_template"`
+	HomeModuleOrder []string `json:"home_module_order"`
+	PrimaryBrandID *uint    `json:"primary_brand_id"`
 	PreviewImage   string   `json:"preview_image"`
 	LogoImage      string   `json:"logo_image"`
 	AccentColor    string   `json:"accent_color"`
+	AccentStrongColor string `json:"accent_strong_color"`
 	SurfaceColor   string   `json:"surface_color"`
+	PageBgColor    string   `json:"page_bg_color"`
+	CardBgColor    string   `json:"card_bg_color"`
+	TextColor      string   `json:"text_color"`
+	MutedTextColor string   `json:"muted_text_color"`
+	BorderColor    string   `json:"border_color"`
+	HeroBgColor    string   `json:"hero_bg_color"`
+	TagBgColor     string   `json:"tag_bg_color"`
 	HeroTitle      string   `json:"hero_title"`
 	Tagline        string   `json:"tagline"`
 	Announcement   string   `json:"announcement"`
 	SupportText    string   `json:"support_text"`
 	SEOTitle       string   `json:"seo_title"`
 	SEODescription string   `json:"seo_description"`
+}
+
+type platformConfigPayload struct {
+	LineContactURL      string `json:"line_contact_url"`
+	FeaturedCategoryIDs []uint `json:"featured_category_ids"`
+	FeaturedBrandIDs    []uint `json:"featured_brand_ids"`
+}
+
+type platformConfigResponse struct {
+	ID                  uint   `json:"id"`
+	LineContactURL      string `json:"line_contact_url"`
+	FeaturedCategoryIDs []uint `json:"featured_category_ids"`
+	FeaturedBrandIDs    []uint `json:"featured_brand_ids"`
 }
 
 type productPayload struct {
@@ -79,6 +116,36 @@ type productPayload struct {
 	SkuVariants       []productSkuVariantPayload  `json:"sku_variants"`
 }
 
+func getOrCreatePlatformConfig(db *gorm.DB) (models.PlatformConfig, error) {
+	var config models.PlatformConfig
+	err := db.First(&config).Error
+	if err == nil {
+		return config, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return config, err
+	}
+
+	config = models.PlatformConfig{
+		LineContactURL:      "",
+		FeaturedCategoryIDs: models.UIntArray{},
+		FeaturedBrandIDs:    models.UIntArray{},
+	}
+	if err := db.Create(&config).Error; err != nil {
+		return config, err
+	}
+	return config, nil
+}
+
+func platformConfigToResponse(config models.PlatformConfig) platformConfigResponse {
+	return platformConfigResponse{
+		ID:                  config.ID,
+		LineContactURL:      config.LineContactURL,
+		FeaturedCategoryIDs: []uint(config.FeaturedCategoryIDs),
+		FeaturedBrandIDs:    []uint(config.FeaturedBrandIDs),
+	}
+}
+
 type productVariantPayload struct {
 	Name string `json:"name"`
 	SKU  string `json:"sku"`
@@ -99,6 +166,7 @@ type productSkuVariantPayload struct {
 type productResponse struct {
 	ID                  uint                   `json:"id"`
 	SKU                 string                 `json:"sku"`
+	Slug                string                 `json:"slug"`
 	BaseName            string                 `json:"base_name"`
 	BasePrice           float64                `json:"base_price"`
 	BaseStockQuantity   int                    `json:"base_stock_quantity"`
@@ -188,18 +256,6 @@ type orderResponse struct {
 	UpdatedAt        interface{}         `json:"updated_at"`
 }
 
-type sitemapURLSet struct {
-	XMLName xml.Name     `xml:"urlset"`
-	Xmlns   string       `xml:"xmlns,attr"`
-	URLs    []sitemapURL `xml:"url"`
-}
-
-type sitemapURL struct {
-	Loc        string `xml:"loc"`
-	ChangeFreq string `xml:"changefreq,omitempty"`
-	Priority   string `xml:"priority,omitempty"`
-}
-
 type categoryPayload struct {
 	Name      string `json:"name"`
 	ParentID  *uint  `json:"parent_id"`
@@ -208,7 +264,6 @@ type categoryPayload struct {
 
 type categoryResponse struct {
 	ID        uint   `json:"id"`
-	TenantID  uint   `json:"tenant_id"`
 	Name      string `json:"name"`
 	ParentID  *uint  `json:"parent_id"`
 	SortOrder int    `json:"sort_order"`
@@ -238,11 +293,94 @@ type bulkProductUpdatePayload struct {
 	IsActive   *bool    `json:"is_active"`
 }
 
+var uploadFilenameUnsafeChars = regexp.MustCompile(`[^a-z0-9]+`)
+
 func stringPtr(value string) *string {
 	if value == "" {
 		return nil
 	}
 	return &value
+}
+
+func sanitizeUploadFilename(originalName string) string {
+	baseName := strings.TrimSpace(strings.TrimSuffix(originalName, filepath.Ext(originalName)))
+	if baseName == "" {
+		return "image"
+	}
+
+	segments := make([]string, 0, len(baseName))
+	var asciiBuffer strings.Builder
+	addASCIIBuffer := func() {
+		if asciiBuffer.Len() == 0 {
+			return
+		}
+		segments = append(segments, asciiBuffer.String())
+		asciiBuffer.Reset()
+	}
+
+	pinyinArgs := pinyin.NewArgs()
+	pinyinArgs.Style = pinyin.Normal
+
+	for _, r := range baseName {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			if r <= unicode.MaxASCII {
+				asciiBuffer.WriteRune(unicode.ToLower(r))
+				continue
+			}
+
+			addASCIIBuffer()
+			syllables := pinyin.Pinyin(string(r), pinyinArgs)
+			if len(syllables) > 0 && len(syllables[0]) > 0 {
+				segments = append(segments, strings.ToLower(syllables[0][0]))
+			}
+		default:
+			addASCIIBuffer()
+		}
+	}
+
+	addASCIIBuffer()
+	baseName = strings.Join(segments, "-")
+	baseName = uploadFilenameUnsafeChars.ReplaceAllString(baseName, "-")
+	baseName = strings.Trim(baseName, "-")
+	if baseName == "" {
+		return "image"
+	}
+	return baseName
+}
+
+func sanitizeSlug(value string) string {
+	result := sanitizeUploadFilename(value)
+	if result == "" {
+		return "product"
+	}
+	return result
+}
+
+func generateProductSlug(db *gorm.DB, productID uint, baseName string) (string, error) {
+	baseSlug := sanitizeSlug(baseName)
+	slug := baseSlug
+	suffix := 2
+
+	for {
+		var count int64
+		query := db.Model(&models.Product{}).Where("slug = ?", slug)
+		if productID > 0 {
+			query = query.Where("id <> ?", productID)
+		}
+		if err := query.Count(&count).Error; err != nil {
+			return "", err
+		}
+		if count == 0 {
+			return slug, nil
+		}
+		slug = baseSlug + "-" + strconv.Itoa(suffix)
+		suffix++
+	}
+}
+
+func GenerateProductSlugForModel(db *gorm.DB, productID uint, baseName string) (string, error) {
+	return generateProductSlug(db, productID, baseName)
 }
 
 func normalizeDomain(value string) string {
@@ -636,7 +774,9 @@ func generateUploadFilename(originalName string) (string, error) {
 		extension = ".bin"
 	}
 
-	return hex.EncodeToString(randomBytes) + extension, nil
+	safeName := sanitizeUploadFilename(originalName)
+	randomSuffix := hex.EncodeToString(randomBytes[:4])
+	return safeName + "-" + randomSuffix + extension, nil
 }
 
 func UploadImageHandler(cfg *config.Config) gin.HandlerFunc {
@@ -703,10 +843,21 @@ func tenantToResponse(tenant models.Tenant) tenantResponse {
 		Name:           tenant.Name,
 		IsActive:       tenant.IsActive,
 		Theme:          jsonString(tenant.ThemeConfig, "theme", ""),
+		HomeTemplate:   jsonString(tenant.ThemeConfig, "homeTemplate", ""),
+		HomeModuleOrder: jsonStringSlice(tenant.ThemeConfig, "homeModuleOrder", []string{}),
+		PrimaryBrandID: jsonUint(tenant.ThemeConfig, "primaryBrandId"),
 		PreviewImage:   jsonString(tenant.ThemeConfig, "previewImage", ""),
 		LogoImage:      jsonString(tenant.ThemeConfig, "logoImage", ""),
 		AccentColor:    jsonString(tenant.ThemeConfig, "accentColor", ""),
+		AccentStrongColor: jsonString(tenant.ThemeConfig, "accentStrongColor", ""),
 		SurfaceColor:   jsonString(tenant.ThemeConfig, "surfaceColor", ""),
+		PageBgColor:    jsonString(tenant.ThemeConfig, "pageBgColor", ""),
+		CardBgColor:    jsonString(tenant.ThemeConfig, "cardBgColor", ""),
+		TextColor:      jsonString(tenant.ThemeConfig, "textColor", ""),
+		MutedTextColor: jsonString(tenant.ThemeConfig, "mutedTextColor", ""),
+		BorderColor:    jsonString(tenant.ThemeConfig, "borderColor", ""),
+		HeroBgColor:    jsonString(tenant.ThemeConfig, "heroBgColor", ""),
+		TagBgColor:     jsonString(tenant.ThemeConfig, "tagBgColor", ""),
 		HeroTitle:      jsonString(tenant.ThemeConfig, "heroTitle", ""),
 		Tagline:        jsonString(tenant.ThemeConfig, "tagline", ""),
 		Announcement:   jsonString(tenant.ThemeConfig, "announcement", ""),
@@ -736,10 +887,21 @@ func tenantPayloadToModel(payload tenantPayload, existing *models.Tenant) models
 	model.IsActive = payload.IsActive
 	model.ThemeConfig = models.JSONMap{
 		"theme":        payload.Theme,
+		"homeTemplate": payload.HomeTemplate,
+		"homeModuleOrder": payload.HomeModuleOrder,
+		"primaryBrandId": payload.PrimaryBrandID,
 		"previewImage": payload.PreviewImage,
 		"logoImage":    payload.LogoImage,
 		"accentColor":  payload.AccentColor,
+		"accentStrongColor": payload.AccentStrongColor,
 		"surfaceColor": payload.SurfaceColor,
+		"pageBgColor":  payload.PageBgColor,
+		"cardBgColor":  payload.CardBgColor,
+		"textColor":    payload.TextColor,
+		"mutedTextColor": payload.MutedTextColor,
+		"borderColor":  payload.BorderColor,
+		"heroBgColor":  payload.HeroBgColor,
+		"tagBgColor":   payload.TagBgColor,
 		"heroTitle":    payload.HeroTitle,
 		"tagline":      payload.Tagline,
 		"announcement": payload.Announcement,
@@ -761,6 +923,7 @@ func productToResponse(product models.Product, override *models.TenantProductOve
 	response := productResponse{
 		ID:                product.ID,
 		SKU:               product.SKU,
+		Slug:              product.Slug,
 		BaseName:          product.BaseName,
 		BasePrice:         product.BasePrice,
 		BaseStockQuantity: product.BaseStockQuantity,
@@ -870,6 +1033,7 @@ func productPayloadToModel(payload productPayload, existing *models.Product) mod
 	}
 
 	model.SKU = payload.SKU
+	model.Slug = existing.Slug
 	model.BaseName = payload.BaseName
 	model.BasePrice = payload.BasePrice
 	model.BaseStockQuantity = payload.BaseStockQuantity
@@ -901,7 +1065,6 @@ func productPayloadToModel(payload productPayload, existing *models.Product) mod
 func categoryToResponse(category models.Category) categoryResponse {
 	return categoryResponse{
 		ID:        category.ID,
-		TenantID:  category.TenantID,
 		Name:      category.Name,
 		ParentID:  category.ParentID,
 		SortOrder: category.SortOrder,
@@ -910,9 +1073,8 @@ func categoryToResponse(category models.Category) categoryResponse {
 
 func brandToResponse(brand models.Brand) brandResponse {
 	response := brandResponse{
-		ID:       brand.ID,
-		TenantID: brand.TenantID,
-		Name:     brand.Name,
+		ID:   brand.ID,
+		Name: brand.Name,
 	}
 	if brand.LogoURL != nil {
 		response.LogoURL = *brand.LogoURL
@@ -947,6 +1109,56 @@ func requestBaseURL(c *gin.Context) string {
 	}
 
 	return scheme + "://" + host
+}
+
+func loadTenantOverrideMap(db *gorm.DB, tenantID uint) (map[uint]*models.TenantProductOverride, error) {
+	var overrides []models.TenantProductOverride
+	if err := db.Where("tenant_id = ?", tenantID).Find(&overrides).Error; err != nil {
+		return nil, err
+	}
+
+	overrideMap := make(map[uint]*models.TenantProductOverride, len(overrides))
+	for i := range overrides {
+		overrideMap[overrides[i].ProductID] = &overrides[i]
+	}
+
+	return overrideMap, nil
+}
+
+func isProductPublished(product models.Product) bool {
+	specs := product.Specifications
+	status := strings.TrimSpace(jsonString(specs, "status", "草稿"))
+	return product.IsActive && status == "上架中"
+}
+
+func isProductVisibleForTenant(product models.Product, override *models.TenantProductOverride) bool {
+	if !isProductPublished(product) {
+		return false
+	}
+	return override == nil || override.IsVisible
+}
+
+func buildVisibleProductResponses(products []models.Product, overrideMap map[uint]*models.TenantProductOverride) []productResponse {
+	result := make([]productResponse, 0, len(products))
+	for _, product := range products {
+		override := overrideMap[product.ID]
+		if !isProductVisibleForTenant(product, override) {
+			continue
+		}
+		result = append(result, productToResponse(product, override))
+	}
+	return result
+}
+
+func productLastModified(product models.Product, override *models.TenantProductOverride) string {
+	updatedAt := product.UpdatedAt
+	if override != nil && override.UpdatedAt.After(updatedAt) {
+		updatedAt = override.UpdatedAt
+	}
+	if updatedAt.IsZero() {
+		return ""
+	}
+	return updatedAt.Format("2006-01-02T15:04:05Z07:00")
 }
 
 func validateTenantDomains(db *gorm.DB, tenantID uint, primaryDomain string, boundDomains []string) error {
@@ -1055,6 +1267,18 @@ func GetCurrentTenantHandler() gin.HandlerFunc {
 	}
 }
 
+func GetPlatformConfigHandler(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		config, err := getOrCreatePlatformConfig(db)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load platform config"})
+			return
+		}
+
+		c.JSON(http.StatusOK, platformConfigToResponse(config))
+	}
+}
+
 func GetTenantHostCheckHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		primaryDomain := c.GetString("tenant_primary_domain")
@@ -1067,73 +1291,6 @@ func GetTenantHostCheckHandler() gin.HandlerFunc {
 			c.Header("X-Primary-Domain", scheme+"://"+primaryDomain)
 		}
 		c.Status(http.StatusNoContent)
-	}
-}
-
-func GetRobotsHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		baseURL := requestBaseURL(c)
-		body := strings.Join([]string{
-			"User-agent: *",
-			"Allow: /",
-			"",
-			"Disallow: /cart",
-			"Disallow: /checkout",
-			"Disallow: /admin",
-			"",
-			"Sitemap: " + baseURL + "/sitemap.xml",
-			"",
-		}, "\n")
-
-		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(body))
-	}
-}
-
-func GetSitemapHandler(db *gorm.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tenantID := c.GetUint("tenant_id")
-		baseURL := requestBaseURL(c)
-
-		var products []models.Product
-		if err := db.Where("is_active = ?", true).Order("id desc").Find(&products).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch products for sitemap"})
-			return
-		}
-
-		var overrides []models.TenantProductOverride
-		if err := db.Where("tenant_id = ?", tenantID).Find(&overrides).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tenant overrides for sitemap"})
-			return
-		}
-
-		overrideMap := make(map[uint]models.TenantProductOverride, len(overrides))
-		for _, override := range overrides {
-			overrideMap[override.ProductID] = override
-		}
-
-		urls := []sitemapURL{
-			{Loc: baseURL + "/", ChangeFreq: "daily", Priority: "1.0"},
-			{Loc: baseURL + "/products", ChangeFreq: "daily", Priority: "0.9"},
-			{Loc: baseURL + "/about", ChangeFreq: "monthly", Priority: "0.6"},
-		}
-
-		for _, product := range products {
-			override, hasOverride := overrideMap[product.ID]
-			if hasOverride && !override.IsVisible {
-				continue
-			}
-
-			urls = append(urls, sitemapURL{
-				Loc:        baseURL + "/products/" + strconv.FormatUint(uint64(product.ID), 10),
-				ChangeFreq: "daily",
-				Priority:   "0.8",
-			})
-		}
-
-		c.XML(http.StatusOK, sitemapURLSet{
-			Xmlns: "http://www.sitemaps.org/schemas/sitemap/0.9",
-			URLs:  urls,
-		})
 	}
 }
 
@@ -1153,24 +1310,27 @@ func GetProductsHandler(db *gorm.DB) gin.HandlerFunc {
 		tenantID := c.GetUint("tenant_id")
 
 		var products []models.Product
-		var total int64
-		db.Model(&models.Product{}).Where("is_active = ?", true).Count(&total)
-		if err := db.Where("is_active = ?", true).Offset(offset).Limit(limitInt).Find(&products).Error; err != nil {
+		if err := db.Where("is_active = ?", true).Order("id desc").Find(&products).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch products"})
 			return
 		}
 
-		var overrides []models.TenantProductOverride
-		db.Where("tenant_id = ?", tenantID).Find(&overrides)
-		overrideMap := make(map[uint]*models.TenantProductOverride)
-		for i := range overrides {
-			overrideMap[overrides[i].ProductID] = &overrides[i]
+		overrideMap, err := loadTenantOverrideMap(db, tenantID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tenant overrides"})
+			return
 		}
 
-		result := make([]productResponse, 0, len(products))
-		for _, product := range products {
-			result = append(result, productToResponse(product, overrideMap[product.ID]))
+		visibleProducts := buildVisibleProductResponses(products, overrideMap)
+		total := len(visibleProducts)
+		if offset > total {
+			offset = total
 		}
+		end := offset + limitInt
+		if end > total {
+			end = total
+		}
+		result := visibleProducts[offset:end]
 
 		c.JSON(http.StatusOK, gin.H{
 			"data":  result,
@@ -1190,7 +1350,12 @@ func GetProductDetailHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		var product models.Product
-		if err := db.First(&product, productID).Error; err != nil {
+		if err := db.Where("id = ? AND is_active = ?", productID, true).First(&product).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
+			return
+		}
+
+		if !isProductPublished(product) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
 			return
 		}
@@ -1203,6 +1368,11 @@ func GetProductDetailHandler(db *gorm.DB) gin.HandlerFunc {
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch product override"})
+			return
+		}
+
+		if !isProductVisibleForTenant(product, &override) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
 			return
 		}
 
@@ -1297,10 +1467,8 @@ func GetProductOverridesHandler(db *gorm.DB) gin.HandlerFunc {
 
 func GetCategoriesHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := c.GetUint("tenant_id")
-
 		var categories []models.Category
-		db.Where("tenant_id = ?", tenantID).Order("parent_id asc, sort_order asc, id asc").Find(&categories)
+		db.Where("tenant_id IS NULL").Order("parent_id asc, sort_order asc, id asc").Find(&categories)
 
 		result := make([]categoryResponse, 0, len(categories))
 		for _, category := range categories {
@@ -1313,7 +1481,6 @@ func GetCategoriesHandler(db *gorm.DB) gin.HandlerFunc {
 
 func CreateCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := c.GetUint("tenant_id")
 		var payload categoryPayload
 		if err := c.ShouldBindJSON(&payload); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid category payload"})
@@ -1321,7 +1488,7 @@ func CreateCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		category := models.Category{
-			TenantID:  tenantID,
+			TenantID:  nil,
 			Name:      payload.Name,
 			ParentID:  payload.ParentID,
 			SortOrder: payload.SortOrder,
@@ -1337,7 +1504,6 @@ func CreateCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 
 func UpdateCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := c.GetUint("tenant_id")
 		paramKey := c.GetString("param_key")
 		if paramKey == "" {
 			paramKey = "id"
@@ -1355,7 +1521,7 @@ func UpdateCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		var category models.Category
-		if err := db.Where("tenant_id = ? AND id = ?", tenantID, categoryID).First(&category).Error; err != nil {
+		if err := db.Where("tenant_id IS NULL AND id = ?", categoryID).First(&category).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Category not found"})
 			return
 		}
@@ -1375,7 +1541,6 @@ func UpdateCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 
 func DeleteCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := c.GetUint("tenant_id")
 		paramKey := c.GetString("param_key")
 		if paramKey == "" {
 			paramKey = "id"
@@ -1387,7 +1552,7 @@ func DeleteCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		var childCount int64
-		if err := db.Model(&models.Category{}).Where("tenant_id = ? AND parent_id = ?", tenantID, categoryID).Count(&childCount).Error; err != nil {
+		if err := db.Model(&models.Category{}).Where("tenant_id IS NULL AND parent_id = ?", categoryID).Count(&childCount).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to inspect category tree"})
 			return
 		}
@@ -1396,7 +1561,7 @@ func DeleteCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		if err := db.Where("tenant_id = ? AND id = ?", tenantID, categoryID).Delete(&models.Category{}).Error; err != nil {
+		if err := db.Where("tenant_id IS NULL AND id = ?", categoryID).Delete(&models.Category{}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete category"})
 			return
 		}
@@ -1409,10 +1574,8 @@ func DeleteCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 
 func GetBrandsHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := c.GetUint("tenant_id")
-
 		var brands []models.Brand
-		db.Where("tenant_id = ?", tenantID).Order("id desc").Find(&brands)
+		db.Order("id desc").Find(&brands)
 
 		result := make([]brandResponse, 0, len(brands))
 		for _, brand := range brands {
@@ -1425,7 +1588,6 @@ func GetBrandsHandler(db *gorm.DB) gin.HandlerFunc {
 
 func CreateBrandHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := c.GetUint("tenant_id")
 		var payload brandPayload
 		if err := c.ShouldBindJSON(&payload); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid brand payload"})
@@ -1433,8 +1595,7 @@ func CreateBrandHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		brand := models.Brand{
-			TenantID: tenantID,
-			Name:     payload.Name,
+			Name: payload.Name,
 		}
 		if payload.LogoURL != "" {
 			brand.LogoURL = stringPtr(payload.LogoURL)
@@ -1454,7 +1615,6 @@ func CreateBrandHandler(db *gorm.DB) gin.HandlerFunc {
 
 func UpdateBrandHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := c.GetUint("tenant_id")
 		paramKey := c.GetString("param_key")
 		if paramKey == "" {
 			paramKey = "id"
@@ -1472,7 +1632,7 @@ func UpdateBrandHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		var brand models.Brand
-		if err := db.Where("tenant_id = ? AND id = ?", tenantID, brandID).First(&brand).Error; err != nil {
+		if err := db.First(&brand, brandID).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Brand not found"})
 			return
 		}
@@ -1492,7 +1652,6 @@ func UpdateBrandHandler(db *gorm.DB) gin.HandlerFunc {
 
 func DeleteBrandHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID := c.GetUint("tenant_id")
 		paramKey := c.GetString("param_key")
 		if paramKey == "" {
 			paramKey = "id"
@@ -1503,7 +1662,7 @@ func DeleteBrandHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		if err := db.Where("tenant_id = ? AND id = ?", tenantID, brandID).Delete(&models.Brand{}).Error; err != nil {
+		if err := db.Delete(&models.Brand{}, brandID).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete brand"})
 			return
 		}
@@ -1519,109 +1678,51 @@ func withTenantContext(tenantID uint, c *gin.Context, next func()) {
 
 func GetAdminCategoriesHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID, err := getUintParam(c, "id")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
-			return
-		}
-		withTenantContext(tenantID, c, func() {
-			GetCategoriesHandler(db)(c)
-		})
+		GetCategoriesHandler(db)(c)
 	}
 }
 
 func CreateAdminCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID, err := getUintParam(c, "id")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
-			return
-		}
-		withTenantContext(tenantID, c, func() {
-			CreateCategoryHandler(db)(c)
-		})
+		CreateCategoryHandler(db)(c)
 	}
 }
 
 func UpdateAdminCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID, err := getUintParam(c, "id")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
-			return
-		}
 		c.Set("param_key", "category_id")
-		withTenantContext(tenantID, c, func() {
-			UpdateCategoryHandler(db)(c)
-		})
+		UpdateCategoryHandler(db)(c)
 	}
 }
 
 func DeleteAdminCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID, err := getUintParam(c, "id")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
-			return
-		}
 		c.Set("param_key", "category_id")
-		withTenantContext(tenantID, c, func() {
-			DeleteCategoryHandler(db)(c)
-		})
+		DeleteCategoryHandler(db)(c)
 	}
 }
 
 func GetAdminBrandsHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID, err := getUintParam(c, "id")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
-			return
-		}
-		withTenantContext(tenantID, c, func() {
-			GetBrandsHandler(db)(c)
-		})
+		GetBrandsHandler(db)(c)
 	}
 }
 
 func CreateAdminBrandHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID, err := getUintParam(c, "id")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
-			return
-		}
-		withTenantContext(tenantID, c, func() {
-			CreateBrandHandler(db)(c)
-		})
+		CreateBrandHandler(db)(c)
 	}
 }
 
 func UpdateAdminBrandHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID, err := getUintParam(c, "id")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
-			return
-		}
-		c.Set("param_key", "brand_id")
-		withTenantContext(tenantID, c, func() {
-			UpdateBrandHandler(db)(c)
-		})
+		UpdateBrandHandler(db)(c)
 	}
 }
 
 func DeleteAdminBrandHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tenantID, err := getUintParam(c, "id")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
-			return
-		}
-		c.Set("param_key", "brand_id")
-		withTenantContext(tenantID, c, func() {
-			DeleteBrandHandler(db)(c)
-		})
+		DeleteBrandHandler(db)(c)
 	}
 }
 
@@ -1932,6 +2033,64 @@ func DeleteTenantHandler(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
+func GetAdminPlatformConfigHandler(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		config, err := getOrCreatePlatformConfig(db)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch platform config"})
+			return
+		}
+
+		c.JSON(http.StatusOK, platformConfigToResponse(config))
+	}
+}
+
+func UpdateAdminPlatformConfigHandler(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var payload platformConfigPayload
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid platform config payload"})
+			return
+		}
+
+		config, err := getOrCreatePlatformConfig(db)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load platform config"})
+			return
+		}
+
+		config.LineContactURL = strings.TrimSpace(payload.LineContactURL)
+		config.FeaturedCategoryIDs = sanitizeFeaturedCategoryIDs(payload.FeaturedCategoryIDs)
+		config.FeaturedBrandIDs = sanitizeFeaturedCategoryIDs(payload.FeaturedBrandIDs)
+		if err := db.Save(&config).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update platform config"})
+			return
+		}
+
+		c.JSON(http.StatusOK, platformConfigToResponse(config))
+	}
+}
+
+func sanitizeFeaturedCategoryIDs(input []uint) models.UIntArray {
+	if len(input) == 0 {
+		return models.UIntArray{}
+	}
+
+	result := make(models.UIntArray, 0, len(input))
+	seen := make(map[uint]struct{}, len(input))
+	for _, id := range input {
+		if id == 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	return result
+}
+
 func GetDashboardHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "Get dashboard endpoint"})
@@ -1963,6 +2122,12 @@ func CreateProductAdminHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		product := productPayloadToModel(payload, nil)
+		slug, err := generateProductSlug(db, 0, product.BaseName)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate product slug"})
+			return
+		}
+		product.Slug = slug
 		if err := db.Create(&product).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create product"})
 			return
@@ -1993,6 +2158,12 @@ func UpdateProductAdminHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		product = productPayloadToModel(payload, &product)
+		slug, err := generateProductSlug(db, product.ID, product.BaseName)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate product slug"})
+			return
+		}
+		product.Slug = slug
 		if err := db.Save(&product).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update product"})
 			return
@@ -2134,6 +2305,26 @@ func UpdateProductOverrideHandler(db *gorm.DB) gin.HandlerFunc {
 		tenantID, err := getUintParam(c, "tenant_id")
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
+			return
+		}
+
+		var tenant models.Tenant
+		if err := db.First(&tenant, tenantID).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Tenant not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load tenant"})
+			return
+		}
+
+		var product models.Product
+		if err := db.First(&product, productID).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load product"})
 			return
 		}
 

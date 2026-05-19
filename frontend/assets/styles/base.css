@@ -1,0 +1,86 @@
+:root {
+  --wp-blue: #2271b1;
+  --wp-blue-dark: #135e96;
+  --wp-blue-soft: #f0f6fc;
+  --wp-green: #00a32a;
+  --wp-amber: #dba617;
+  --wp-red: #d63638;
+  --wp-admin-dark: #1d2327;
+  --wp-admin-muted: #50575e;
+  --wp-border: #dcdcde;
+  --wp-border-strong: #c3c4c7;
+  --wp-surface: #ffffff;
+  --wp-surface-alt: #f6f7f7;
+  --wp-surface-soft: #fbfbfc;
+  --wp-text: #1d2327;
+  --wp-text-muted: #646970;
+  --wp-heading: #101517;
+  --wp-shadow: 0 1px 0 rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.08);
+  --wp-shadow-hover: 0 12px 32px rgba(0, 0, 0, 0.09);
+  --content-width: 1560px;
+  --tenant-accent: #2271b1;
+  --tenant-accent-strong: #135e96;
+  --tenant-surface: #f6f7f7;
+  --tenant-page-bg: #f3f6f9;
+  --tenant-card-bg: #ffffff;
+  --tenant-text: #1d2327;
+  --tenant-muted: #646970;
+  --tenant-border: #dcdcde;
+  --tenant-hero-bg: #f0f6fc;
+  --tenant-tag-bg: #f0f6fc;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+html {
+  font-size: 16px;
+}
+
+body {
+  min-height: 100vh;
+  color: var(--tenant-text, var(--wp-text));
+  background:
+    radial-gradient(circle at top, color-mix(in srgb, var(--tenant-accent, #2271b1) 10%, transparent), transparent 24%),
+    linear-gradient(180deg, var(--tenant-page-bg, #f3f6f9) 0%, var(--tenant-surface, #f6f7f7) 20%, var(--tenant-surface, #f6f7f7) 100%);
+  line-height: 1.6;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    'Helvetica Neue',
+    Arial,
+    sans-serif;
+  font-size: 0.875rem;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+  border: 0;
+}
+
+a {
+  color: var(--wp-blue);
+  text-decoration: none;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}

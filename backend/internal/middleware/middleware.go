@@ -113,8 +113,7 @@ func buildPrimaryDomainRedirect(c *gin.Context, primaryDomain string) string {
 
 func shouldSkipTenantLookup(c *gin.Context) bool {
 	path := c.Request.URL.Path
-	return path == "/" ||
-		path == "/health" ||
+	return path == "/health" ||
 		path == "/favicon.ico" ||
 		strings.HasPrefix(path, "/uploads/") ||
 		strings.HasPrefix(path, "/api/admin") ||

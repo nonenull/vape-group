@@ -12,6 +12,24 @@ import type {
 
 const store = useAdminStore()
 
+function cloneProduct(product: ProductRecord): ProductRecord {
+  return {
+    ...product,
+    gallery: [...product.gallery],
+    detailImages: [...product.detailImages],
+    flavors: [...(product.flavors ?? [])],
+    variants: (product.variants ?? []).map((variant) => ({ ...variant })),
+    optionGroups: (product.optionGroups ?? []).map((group) => ({
+      ...group,
+      values: [...group.values],
+    })),
+    skuVariants: (product.skuVariants ?? []).map((variant) => ({
+      ...variant,
+      selections: { ...variant.selections },
+    })),
+  }
+}
+
 const emptyProduct = (): ProductRecord => ({
   id: 0,
   sku: '',
@@ -26,6 +44,12 @@ const emptyProduct = (): ProductRecord => ({
   gallery: ['/src/assets/logo.svg'],
   detailImages: ['/src/assets/logo.svg'],
   status: '草稿',
+  description: '',
+  longDescription: '',
+  badge: '',
+  rating: 0,
+  reviews: 0,
+  isActive: true,
   flavors: [],
   variants: [],
   optionGroups: [],
@@ -36,7 +60,11 @@ const emptyProduct = (): ProductRecord => ({
 const selectedProductId = ref(store.products[0]?.id ?? 0)
 const selectedTenantId = ref(store.tenants[0]?.id ?? 0)
 const isCreating = ref(false)
+const isProductModalOpen = ref(false)
+const isPreviewModalOpen = ref(false)
+const isOverrideModalOpen = ref(false)
 const selectedProductIds = ref<number[]>([])
+const bulkStatus = ref<ProductRecord['status']>('上架中')
 const galleryInput = ref('')
 const detailImagesInput = ref('')
 const skuVariantInput = ref('')
@@ -55,11 +83,14 @@ const selectedOverride = computed(() => {
   }
   return store.getOverride(selectedProduct.value.id, selectedTenantId.value)
 })
+const selectedTenant = computed(() => {
+  return store.tenants.find((item) => item.id === selectedTenantId.value) ?? null
+})
 
-const categoryOptions = computed(() => store.getCategoriesByTenant(selectedTenantId.value))
-const brandOptions = computed(() => store.getBrandsByTenant(selectedTenantId.value))
+const categoryOptions = computed(() => store.getCategories())
+const brandOptions = computed(() => store.getBrands())
 
-const productForm = ref<ProductRecord>(store.products[0] ? { ...store.products[0] } : emptyProduct())
+const productForm = ref<ProductRecord>(store.products[0] ? cloneProduct(store.products[0]) : emptyProduct())
 const overrideForm = ref<ProductOverrideRecord>({
   id: 0,
   tenantId: selectedTenantId.value,
@@ -72,6 +103,14 @@ const overrideForm = ref<ProductOverrideRecord>({
   seoDescription: '',
   isVisible: true,
 })
+
+function hydrateProductForm(product: ProductRecord) {
+  const cloned = cloneProduct(product)
+  productForm.value = cloned
+  galleryInput.value = cloned.gallery.join('\n')
+  detailImagesInput.value = cloned.detailImages.join('\n')
+  skuVariantInput.value = formatSkuVariantInput(cloned.skuVariants ?? [])
+}
 
 function formatSkuVariantInput(variants: ProductSkuVariantRecord[]) {
   return variants
@@ -94,17 +133,7 @@ watch(
     }
     const product = store.products.find((item) => item.id === productId)
     if (product) {
-      productForm.value = {
-        ...product,
-        gallery: [...product.gallery],
-        detailImages: [...product.detailImages],
-        variants: [...(product.variants ?? [])],
-        optionGroups: [...(product.optionGroups ?? [])],
-        skuVariants: [...(product.skuVariants ?? [])],
-      }
-      galleryInput.value = product.gallery.join('\n')
-      detailImagesInput.value = product.detailImages.join('\n')
-      skuVariantInput.value = formatSkuVariantInput(product.skuVariants ?? [])
+      hydrateProductForm(product)
     }
   },
   { immediate: true },
@@ -154,11 +183,69 @@ function toggleSelectAllProducts(checked: boolean) {
 
 function startCreateProduct() {
   isCreating.value = true
-  selectedProductId.value = 0
+  isProductModalOpen.value = true
   productForm.value = emptyProduct()
   galleryInput.value = productForm.value.gallery.join('\n')
   detailImagesInput.value = productForm.value.detailImages.join('\n')
   skuVariantInput.value = ''
+}
+
+function openEditProduct(productId: number) {
+  const product = store.products.find((item) => item.id === productId)
+  if (!product) {
+    return
+  }
+  isCreating.value = false
+  selectedProductId.value = productId
+  hydrateProductForm(product)
+  isProductModalOpen.value = true
+}
+
+function closeProductModal() {
+  isProductModalOpen.value = false
+
+  if (selectedProduct.value) {
+    hydrateProductForm(selectedProduct.value)
+  } else {
+    productForm.value = emptyProduct()
+    galleryInput.value = productForm.value.gallery.join('\n')
+    detailImagesInput.value = productForm.value.detailImages.join('\n')
+    skuVariantInput.value = ''
+  }
+
+  isCreating.value = false
+}
+
+function openPreviewModal() {
+  if (!selectedProduct.value) {
+    return
+  }
+  isPreviewModalOpen.value = true
+}
+
+function closePreviewModal() {
+  isPreviewModalOpen.value = false
+}
+
+function openOverrideModal() {
+  if (!selectedProduct.value) {
+    return
+  }
+  isOverrideModalOpen.value = true
+}
+
+function closeOverrideModal() {
+  isOverrideModalOpen.value = false
+}
+
+function openPreviewForProduct(productId: number) {
+  selectProduct(productId)
+  openPreviewModal()
+}
+
+function openOverrideForProduct(productId: number) {
+  selectProduct(productId)
+  openOverrideModal()
 }
 
 function syncGalleryFromInput() {
@@ -360,18 +447,9 @@ async function saveProduct() {
         isActive: productForm.value.isActive,
       })
       isCreating.value = false
+      isProductModalOpen.value = false
       selectedProductId.value = created.id
-      productForm.value = {
-        ...created,
-        gallery: [...created.gallery],
-        detailImages: [...created.detailImages],
-        variants: [...(created.variants ?? [])],
-        optionGroups: [...(created.optionGroups ?? [])],
-        skuVariants: [...(created.skuVariants ?? [])],
-      }
-      galleryInput.value = created.gallery.join('\n')
-      detailImagesInput.value = created.detailImages.join('\n')
-      skuVariantInput.value = formatSkuVariantInput(created.skuVariants ?? [])
+      hydrateProductForm(created)
       alert('商品已成功建立')
       return
     }
@@ -384,6 +462,7 @@ async function saveProduct() {
       optionGroups: [...(productForm.value.optionGroups ?? [])],
       skuVariants: [...(productForm.value.skuVariants ?? [])],
     })
+    isProductModalOpen.value = false
     alert('商品已成功儲存')
   } catch (error) {
     console.error('保存商品失敗:', error)
@@ -395,31 +474,73 @@ async function removeProduct() {
   if (!selectedProduct.value) {
     return
   }
+  await removeProductById(selectedProduct.value.id)
+}
+
+async function removeProductById(productId: number) {
+  const product = store.products.find((item) => item.id === productId)
+  if (!product) {
+    return
+  }
   if (!confirm('確定要刪除此商品嗎？')) {
     return
   }
   try {
-    await store.deleteProduct(selectedProduct.value.id)
+    await store.deleteProduct(productId)
     isCreating.value = false
+    isProductModalOpen.value = false
     const fallback = store.products[0]
     selectedProductId.value = fallback?.id ?? 0
-    productForm.value = fallback
-      ? {
-        ...fallback,
-        gallery: [...fallback.gallery],
-        detailImages: [...fallback.detailImages],
-        variants: [...(fallback.variants ?? [])],
-        optionGroups: [...(fallback.optionGroups ?? [])],
-        skuVariants: [...(fallback.skuVariants ?? [])],
-      }
-      : emptyProduct()
-    galleryInput.value = productForm.value.gallery.join('\n')
-    detailImagesInput.value = productForm.value.detailImages.join('\n')
-    skuVariantInput.value = formatSkuVariantInput(productForm.value.skuVariants ?? [])
+    if (fallback) {
+      hydrateProductForm(fallback)
+    } else {
+      productForm.value = emptyProduct()
+      galleryInput.value = productForm.value.gallery.join('\n')
+      detailImagesInput.value = productForm.value.detailImages.join('\n')
+      skuVariantInput.value = ''
+    }
     alert('商品已成功刪除')
   } catch (error) {
     console.error('刪除商品失敗:', error)
     alert('刪除商品失敗: ' + (error as Error).message)
+  }
+}
+
+async function removeSelectedProducts() {
+  if (!selectedProductIds.value.length) {
+    alert('請先選擇至少一個商品')
+    return
+  }
+
+  if (!confirm(`確定要批量刪除這 ${selectedProductIds.value.length} 個商品嗎？此操作無法復原。`)) {
+    return
+  }
+
+  try {
+    const productIds = [...selectedProductIds.value]
+    for (const productId of productIds) {
+      await store.deleteProduct(productId)
+    }
+
+    selectedProductIds.value = []
+    isCreating.value = false
+    isProductModalOpen.value = false
+
+    const fallback = store.products[0]
+    selectedProductId.value = fallback?.id ?? 0
+    if (fallback) {
+      hydrateProductForm(fallback)
+    } else {
+      productForm.value = emptyProduct()
+      galleryInput.value = productForm.value.gallery.join('\n')
+      detailImagesInput.value = productForm.value.detailImages.join('\n')
+      skuVariantInput.value = ''
+    }
+
+    alert('已批量刪除選中的商品')
+  } catch (error) {
+    console.error('批量刪除商品失敗:', error)
+    alert('批量刪除商品失敗: ' + (error as Error).message)
   }
 }
 
@@ -438,9 +559,44 @@ async function applyBulkProductUpdate(payload: { status?: ProductRecord['status'
   }
 }
 
+function getBulkStatusPayload(status: ProductRecord['status']) {
+  if (status === '上架中') {
+    return {
+      status,
+      isActive: true,
+    }
+  }
+
+  return {
+    status,
+    isActive: false,
+  }
+}
+
+async function applyBulkStatusChange() {
+  const status = bulkStatus.value
+  await applyBulkProductUpdate(
+    getBulkStatusPayload(status),
+    `已批量將商品狀態修改為「${status}」`,
+  )
+}
+
 async function saveOverride() {
+  if (!selectedProduct.value) {
+    alert('請先選擇商品')
+    return
+  }
+  if (!selectedTenant.value) {
+    alert('請先選擇有效租戶')
+    return
+  }
+
   try {
-    await store.upsertOverride({ ...overrideForm.value })
+    await store.upsertOverride({
+      ...overrideForm.value,
+      tenantId: selectedTenant.value.id,
+      productId: selectedProduct.value.id,
+    })
     alert('租戶覆寫已成功儲存')
   } catch (error) {
     console.error('保存租戶覆寫失敗:', error)
@@ -458,24 +614,14 @@ onMounted(async () => {
   const fallback = store.products[0]
   if (fallback && !selectedProduct.value) {
     selectedProductId.value = fallback.id
-    productForm.value = {
-      ...fallback,
-      gallery: [...fallback.gallery],
-      detailImages: [...fallback.detailImages],
-      variants: [...(fallback.variants ?? [])],
-      optionGroups: [...(fallback.optionGroups ?? [])],
-      skuVariants: [...(fallback.skuVariants ?? [])],
-    }
-    galleryInput.value = fallback.gallery.join('\n')
-    detailImagesInput.value = fallback.detailImages.join('\n')
-    skuVariantInput.value = formatSkuVariantInput(fallback.skuVariants ?? [])
+    hydrateProductForm(fallback)
   }
   const selectedTenant = store.tenants[0]
   if (selectedTenant) {
     selectedTenantId.value = selectedTenant.id
     await Promise.all([
-      store.fetchCategories(selectedTenant.id),
-      store.fetchBrands(selectedTenant.id),
+      store.fetchCategories(),
+      store.fetchBrands(),
     ])
     if (selectedProductId.value) {
       await store.fetchProductOverride(selectedProductId.value, selectedTenant.id)
@@ -489,8 +635,8 @@ watch(
     if (productId && tenantId && !isCreating.value) {
       await Promise.all([
         store.fetchProductOverride(productId, tenantId),
-        store.fetchCategories(tenantId),
-        store.fetchBrands(tenantId),
+        store.fetchCategories(),
+        store.fetchBrands(),
       ])
     }
   },
@@ -526,7 +672,9 @@ watch(
     <div class="workspace-grid">
       <article class="table-card">
         <div class="table-toolbar">
-          <span>商品清單</span>
+          <div class="table-toolbar-head">
+            <span>商品清單</span>
+          </div>
           <div class="bulk-toolbar">
             <label class="bulk-select-all">
               <input
@@ -537,49 +685,258 @@ watch(
               <span>全選</span>
             </label>
             <span class="bulk-count">已選 {{ selectedProductIds.length }}</span>
-            <button class="secondary" type="button" @click="applyBulkProductUpdate({ status: '上架中', isActive: true }, '已批量上架商品')">批量上架</button>
-            <button class="secondary" type="button" @click="applyBulkProductUpdate({ status: '草稿', isActive: false }, '已批量設為草稿')">批量草稿</button>
-            <button class="secondary" type="button" @click="applyBulkProductUpdate({ status: '缺貨', isActive: false }, '已批量設為缺貨')">批量缺貨</button>
-            <button class="danger" type="button" @click="applyBulkProductUpdate({ isActive: false }, '已批量下架商品')">批量下架</button>
+            <div class="bulk-status-group">
+              <select v-model="bulkStatus" class="bulk-status-select">
+                <option value="上架中">上架中</option>
+                <option value="草稿">草稿</option>
+                <option value="缺貨">缺貨</option>
+              </select>
+              <button class="secondary" type="button" @click="applyBulkStatusChange">批量修改狀態</button>
+            </div>
+            <button class="danger" type="button" @click="removeSelectedProducts">批量刪除</button>
           </div>
         </div>
-        <div class="product-list">
-          <div
-            v-for="product in store.products"
-            :key="product.id"
-            class="product-row"
-            :class="{
-              selected: product.id === selectedProductId && !isCreating,
-              checked: selectedProductIds.includes(product.id),
-            }"
-          >
-            <label class="product-select">
-              <input
-                :checked="selectedProductIds.includes(product.id)"
-                type="checkbox"
-                @change="toggleProductSelection(product.id, ($event.target as HTMLInputElement).checked)"
+        <div class="table-scroller">
+          <table class="product-table">
+            <thead>
+              <tr>
+                <th class="checkbox-col">
+                  <input
+                    :checked="isAllProductsSelected"
+                    type="checkbox"
+                    @change="toggleSelectAllProducts(($event.target as HTMLInputElement).checked)"
+                  />
+                </th>
+                <th>商品</th>
+                <th>SKU</th>
+                <th>Slug</th>
+                <th>分類 / 品牌</th>
+                <th>價格</th>
+                <th>庫存</th>
+                <th>狀態</th>
+                <th>更新時間</th>
+                <th class="action-col">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="product in store.products"
+                :key="product.id"
+                :class="{
+                  selected: product.id === selectedProductId && !isCreating,
+                  checked: selectedProductIds.includes(product.id),
+                }"
+                @click="selectProduct(product.id)"
+              >
+                <td class="checkbox-col" @click.stop>
+                  <input
+                    :checked="selectedProductIds.includes(product.id)"
+                    type="checkbox"
+                    @change="toggleProductSelection(product.id, ($event.target as HTMLInputElement).checked)"
+                  />
+                </td>
+                <td>
+                  <div class="product-cell">
+                    <img :src="displayImage(product.previewImage)" :alt="product.baseName" class="product-thumb" />
+                    <div class="product-copy">
+                      <strong>{{ product.baseName }}</strong>
+                      <small>{{ product.description || '尚未填寫商品摘要' }}</small>
+                    </div>
+                  </div>
+                </td>
+                <td>{{ product.sku }}</td>
+                <td class="slug-cell">{{ product.slug || '—' }}</td>
+                <td>
+                  <div class="meta-stack">
+                    <span>{{ product.category || '未分類' }}</span>
+                    <small>{{ product.brand || '未綁定品牌' }}</small>
+                  </div>
+                </td>
+                <td>NT$ {{ product.basePrice }}</td>
+              <td>{{ product.baseStockQuantity }}</td>
+              <td><span class="status-pill">{{ product.status }}</span></td>
+              <td>{{ product.updatedAt || '尚未更新' }}</td>
+              <td class="action-col" @click.stop>
+                  <div class="row-actions">
+                    <button class="secondary small-button" type="button" @click="openPreviewForProduct(product.id)">預覽</button>
+                    <button class="secondary small-button" type="button" @click="openOverrideForProduct(product.id)">覆寫</button>
+                    <button class="secondary small-button" type="button" @click="openEditProduct(product.id)">編輯</button>
+                    <button class="danger small-button" type="button" @click="removeProductById(product.id)">刪除</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </div>
+
+    <div
+      v-if="isPreviewModalOpen && selectedProduct"
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      @click.self="closePreviewModal"
+    >
+      <article class="modal-card preview-modal-card">
+        <div class="card-heading modal-heading">
+          <div>
+            <h3>預覽商品內容</h3>
+            <small>{{ selectedProduct.baseName }}</small>
+          </div>
+          <button class="secondary" type="button" @click="closePreviewModal">關閉</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="preview-grid">
+            <div class="main-preview">
+              <img :src="displayImage(selectedProduct.previewImage)" :alt="selectedProduct.baseName || 'product preview'" />
+            </div>
+            <div class="gallery-preview" v-if="selectedProduct.gallery?.length">
+              <img
+                v-for="(image, index) in selectedProduct.gallery"
+                :key="`preview-gallery-${image}-${index}`"
+                :src="displayImage(image)"
+                :alt="`${selectedProduct.baseName || 'product'}-gallery-${index}`"
               />
-            </label>
-            <button type="button" class="product-main" @click="selectProduct(product.id)">
-              <img :src="displayImage(product.previewImage)" :alt="product.baseName" class="product-thumb" />
-              <div class="product-copy">
-                <strong>{{ product.baseName }}</strong>
-                <p>{{ product.sku }} · {{ product.category }}</p>
-                <small>NT$ {{ product.basePrice }} · 庫存 {{ product.baseStockQuantity }}</small>
+            </div>
+          </div>
+
+          <div class="preview-copy-grid">
+            <dl class="overview-details">
+              <div>
+                <dt>SKU</dt>
+                <dd>{{ selectedProduct.sku }}</dd>
               </div>
-              <span class="status-pill">{{ product.status }}</span>
-            </button>
+              <div>
+                <dt>Slug</dt>
+                <dd>{{ selectedProduct.slug || '—' }}</dd>
+              </div>
+              <div>
+                <dt>分類</dt>
+                <dd>{{ selectedProduct.category || '未分類' }}</dd>
+              </div>
+              <div>
+                <dt>品牌</dt>
+                <dd>{{ selectedProduct.brand || '未綁定品牌' }}</dd>
+              </div>
+              <div>
+                <dt>價格</dt>
+                <dd>NT$ {{ selectedProduct.basePrice }}</dd>
+              </div>
+              <div>
+                <dt>庫存</dt>
+                <dd>{{ selectedProduct.baseStockQuantity }}</dd>
+              </div>
+              <div>
+                <dt>狀態</dt>
+                <dd>{{ selectedProduct.status }}</dd>
+              </div>
+            </dl>
+
+            <div class="preview-copy-block">
+              <h4>商品摘要</h4>
+              <p class="overview-description">{{ selectedProduct.description || '尚未填寫商品簡介。' }}</p>
+            </div>
+
+            <div class="preview-copy-block" v-if="selectedProduct.longDescription">
+              <h4>商品說明</h4>
+              <p class="overview-description">{{ selectedProduct.longDescription }}</p>
+            </div>
+
+            <div class="preview-grid" v-if="selectedProduct.detailImages?.length">
+              <h4>詳情圖預覽</h4>
+              <div class="detail-preview">
+                <img
+                  v-for="(image, index) in selectedProduct.detailImages"
+                  :key="`preview-detail-${image}-${index}`"
+                  :src="displayImage(image)"
+                  :alt="`${selectedProduct.baseName || 'product'}-detail-${index}`"
+                />
+              </div>
+            </div>
           </div>
         </div>
       </article>
+    </div>
 
-      <div class="editor-stack">
-        <article class="editor-card">
-          <div class="card-heading">
-            <h3>{{ isCreating ? '新增商品' : '全域商品資料' }}</h3>
-            <small v-if="!isCreating">最後更新 {{ productForm.updatedAt }}</small>
+    <div
+      v-if="isOverrideModalOpen && selectedProduct"
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      @click.self="closeOverrideModal"
+    >
+      <article class="modal-card override-modal-card">
+        <div class="card-heading modal-heading split">
+          <h3>租戶商品覆寫</h3>
+          <select v-model.number="selectedTenantId">
+            <option :value="0">請選擇租戶</option>
+            <option v-for="tenant in store.tenants" :key="tenant.id" :value="tenant.id">
+              {{ tenant.name }}
+            </option>
+          </select>
+        </div>
+
+        <div class="modal-body">
+          <div class="form-grid">
+            <label class="full">
+              <span>自訂商品名稱</span>
+              <input v-model="overrideForm.customName" />
+            </label>
+            <label class="full">
+              <span>自訂商品簡介</span>
+              <textarea v-model="overrideForm.customDescription" rows="4"></textarea>
+            </label>
+            <label>
+              <span>租戶售價</span>
+              <input v-model.number="overrideForm.customPrice" type="number" min="0" step="0.01" />
+            </label>
+            <label>
+              <span>租戶庫存</span>
+              <input v-model.number="overrideForm.customStockQuantity" type="number" min="0" />
+            </label>
+            <label class="full">
+              <span>SEO 標題</span>
+              <input v-model="overrideForm.seoTitle" />
+            </label>
+            <label class="full">
+              <span>SEO 描述</span>
+              <textarea v-model="overrideForm.seoDescription" rows="3"></textarea>
+            </label>
           </div>
+          <label class="toggle">
+            <input v-model="overrideForm.isVisible" type="checkbox" />
+            <span>此租戶站點顯示這個商品</span>
+          </label>
+        </div>
 
+        <div class="actions modal-actions">
+          <button class="secondary" type="button" @click="closeOverrideModal">取消</button>
+          <button class="primary" type="button" :disabled="!selectedTenant || !selectedProduct" @click="saveOverride">
+            儲存租戶覆寫
+          </button>
+        </div>
+      </article>
+    </div>
+
+    <div
+      v-if="isProductModalOpen"
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      @click.self="closeProductModal"
+    >
+      <article class="modal-card">
+        <div class="card-heading modal-heading">
+          <div>
+            <h3>{{ isCreating ? '新增商品' : '修改商品' }}</h3>
+            <small v-if="!isCreating">最後更新 {{ productForm.updatedAt || '尚未更新' }}</small>
+          </div>
+          <button class="secondary" type="button" @click="closeProductModal">關閉</button>
+        </div>
+
+        <div class="modal-body">
           <div class="preview-grid">
             <div class="main-preview">
               <img :src="displayImage(productForm.previewImage)" :alt="productForm.baseName || 'product preview'" />
@@ -626,6 +983,10 @@ watch(
               <input v-model="productForm.sku" />
             </label>
             <label>
+              <span>Slug</span>
+              <input :value="productForm.slug || '儲存後自動產生'" readonly />
+            </label>
+            <label>
               <span>分類</span>
               <select v-model="productForm.categoryId" @change="syncCategorySelection">
                 <option :value="null">請選擇分類</option>
@@ -646,6 +1007,22 @@ watch(
             <label class="full">
               <span>基礎商品名稱</span>
               <input v-model="productForm.baseName" />
+            </label>
+            <label class="full">
+              <span>商品簡介</span>
+              <textarea
+                v-model="productForm.description"
+                rows="3"
+                placeholder="顯示在商品卡片與詳情頁標題下方的摘要"
+              ></textarea>
+            </label>
+            <label class="full">
+              <span>商品說明</span>
+              <textarea
+                v-model="productForm.longDescription"
+                rows="6"
+                placeholder="顯示在前台商品詳情區塊，支援多行內容"
+              ></textarea>
             </label>
             <label>
               <span>基礎價格</span>
@@ -687,57 +1064,16 @@ watch(
               </select>
             </label>
           </div>
+        </div>
 
-          <div class="actions">
-            <button v-if="!isCreating" class="danger" type="button" @click="removeProduct">刪除商品</button>
+        <div class="actions modal-actions">
+          <button v-if="!isCreating" class="danger" type="button" @click="removeProduct">刪除商品</button>
+          <div class="action-group">
+            <button class="secondary" type="button" @click="closeProductModal">取消</button>
             <button class="primary" type="button" @click="saveProduct">{{ isCreating ? '建立商品' : '儲存全域商品' }}</button>
           </div>
-        </article>
-
-        <article class="editor-card">
-          <div class="card-heading split">
-            <h3>租戶商品覆寫</h3>
-            <select v-model.number="selectedTenantId">
-              <option v-for="tenant in store.tenants" :key="tenant.id" :value="tenant.id">
-                {{ tenant.name }}
-              </option>
-            </select>
-          </div>
-          <div class="form-grid">
-            <label class="full">
-              <span>自訂商品名稱</span>
-              <input v-model="overrideForm.customName" />
-            </label>
-            <label class="full">
-              <span>自訂商品描述</span>
-              <textarea v-model="overrideForm.customDescription" rows="4"></textarea>
-            </label>
-            <label>
-              <span>租戶售價</span>
-              <input v-model.number="overrideForm.customPrice" type="number" min="0" step="0.01" />
-            </label>
-            <label>
-              <span>租戶庫存</span>
-              <input v-model.number="overrideForm.customStockQuantity" type="number" min="0" />
-            </label>
-            <label class="full">
-              <span>SEO 標題</span>
-              <input v-model="overrideForm.seoTitle" />
-            </label>
-            <label class="full">
-              <span>SEO 描述</span>
-              <textarea v-model="overrideForm.seoDescription" rows="3"></textarea>
-            </label>
-          </div>
-          <label class="toggle">
-            <input v-model="overrideForm.isVisible" type="checkbox" />
-            <span>此租戶站點顯示這個商品</span>
-          </label>
-          <div class="actions">
-            <button class="primary" type="button" @click="saveOverride">儲存租戶覆寫</button>
-          </div>
-        </article>
-      </div>
+        </div>
+      </article>
     </div>
   </section>
 </template>
@@ -780,7 +1116,8 @@ watch(
 
 .metric-card,
 .table-card,
-.editor-card {
+.editor-card,
+.modal-card {
   background: #fff;
   border: 1px solid var(--wp-border);
   border-radius: 0.5rem;
@@ -802,9 +1139,7 @@ watch(
 }
 
 .workspace-grid {
-  display: grid;
-  gap: 0.875rem;
-  grid-template-columns: minmax(420px, 0.95fr) minmax(0, 1.05fr);
+  display: block;
 }
 
 .table-card {
@@ -812,13 +1147,18 @@ watch(
 }
 
 .table-toolbar,
-.editor-card {
+.editor-card,
+.modal-card {
   padding: 0.85rem 1rem;
 }
 
 .table-toolbar {
   display: grid;
   gap: 0.75rem;
+}
+
+.table-scroller {
+  overflow-x: auto;
 }
 
 .bulk-toolbar {
@@ -845,50 +1185,75 @@ watch(
   margin-right: 0.25rem;
 }
 
-.product-list {
-  display: grid;
+.bulk-status-group {
+  display: inline-flex;
+  align-items: center;
   gap: 0.5rem;
 }
 
-.product-row {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.625rem;
-  align-items: center;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid var(--wp-border);
-  border-radius: 0.375rem;
-  background: var(--wp-surface-soft);
+.bulk-status-select {
+  width: auto;
+  min-width: 132px;
 }
 
-.product-row.selected {
-  border-color: var(--wp-blue);
+.product-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 860px;
+}
+
+.product-table th,
+.product-table td {
+  padding: 0.8rem 0.85rem;
+  border-top: 1px solid var(--wp-border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.product-table th {
+  color: var(--wp-text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #f8fafc;
+}
+
+.product-table tbody tr {
+  cursor: pointer;
+  transition: background-color 0.18s ease;
+}
+
+.product-table tbody tr:hover {
+  background: #f8fbff;
+}
+
+.product-table tbody tr.selected {
   background: #f0f6fc;
 }
 
-.product-row.checked {
-  box-shadow: inset 0 0 0 1px rgba(34, 113, 177, 0.18);
+.product-table tbody tr.checked {
+  box-shadow: inset 3px 0 0 var(--wp-blue);
 }
 
-.product-select {
-  display: inline-flex;
-  align-items: center;
+.checkbox-col {
+  width: 48px;
 }
 
-.product-select input {
+.action-col {
+  width: 280px;
+}
+
+.checkbox-col input {
   width: auto;
   min-height: auto;
 }
 
-.product-main {
+.product-cell {
   display: grid;
-  grid-template-columns: 56px 1fr auto;
+  grid-template-columns: 56px minmax(0, 1fr);
   gap: 0.75rem;
   align-items: center;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  text-align: left;
 }
 
 .product-thumb {
@@ -904,12 +1269,19 @@ watch(
   display: block;
   font-size: 0.95rem;
   line-height: 1.3;
+  margin-bottom: 0.15rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
-.product-copy p,
 .product-copy small {
   color: var(--wp-text-muted);
   font-size: 0.82rem;
+  line-height: 1.4;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .status-pill {
@@ -924,9 +1296,35 @@ watch(
   font-size: 0.75rem;
 }
 
-.editor-stack {
+.meta-stack {
   display: grid;
-  gap: 0.875rem;
+  gap: 0.15rem;
+}
+
+.meta-stack small {
+  color: var(--wp-text-muted);
+}
+
+.slug-cell {
+  max-width: 220px;
+  color: var(--wp-text-muted);
+  font-size: 0.82rem;
+  word-break: break-word;
+}
+
+.row-actions {
+  display: flex;
+  gap: 0.45rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.table-toolbar-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .card-heading {
@@ -948,6 +1346,58 @@ watch(
 
 .card-heading.split select {
   min-width: 220px;
+}
+
+.preview-copy-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.preview-copy-block {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.preview-copy-block h4 {
+  margin: 0;
+}
+
+.overview-title small,
+.overview-description {
+  color: var(--wp-text-muted);
+}
+
+.overview-details {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.overview-details div {
+  padding: 0.75rem;
+  border: 1px solid var(--wp-border);
+  border-radius: 0.625rem;
+  background: var(--wp-surface-soft);
+}
+
+.overview-details dt {
+  margin: 0 0 0.25rem;
+  color: var(--wp-text-muted);
+  font-size: 0.8rem;
+}
+
+.overview-details dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.empty-state {
+  padding: 1rem;
+  border: 1px dashed var(--wp-border-strong);
+  border-radius: 0.625rem;
+  color: var(--wp-text-muted);
+  background: var(--wp-surface-soft);
 }
 
 .preview-grid {
@@ -1064,6 +1514,11 @@ textarea {
   margin-top: 0.75rem;
 }
 
+.action-group {
+  display: flex;
+  gap: 0.625rem;
+}
+
 .primary,
 .danger,
 .secondary,
@@ -1100,17 +1555,100 @@ textarea {
   border-color: rgba(214, 54, 56, 0.18);
 }
 
+.small-button {
+  min-height: 1.95rem;
+  padding: 0.35rem 0.65rem;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  overflow-y: auto;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+.modal-card {
+  width: min(1080px, 100%);
+  height: min(calc(100vh - 3rem), 100%);
+  max-height: calc(100vh - 3rem);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0;
+}
+
+.preview-modal-card {
+  width: min(960px, 100%);
+}
+
+.override-modal-card {
+  width: min(760px, 100%);
+  height: auto;
+  max-height: min(calc(100vh - 3rem), 820px);
+}
+
+.modal-heading {
+  margin-bottom: 0;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--wp-border);
+}
+
+.modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  padding-top: 0.85rem;
+}
+
+.modal-actions {
+  align-items: center;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--wp-border);
+}
+
 @media (max-width: 1100px) {
-  .page-heading,
-  .workspace-grid {
-    grid-template-columns: 1fr;
+  .overview-details {
+    grid-template-columns: 1fr 1fr;
   }
 }
 
 @media (max-width: 780px) {
+  .page-heading {
+    flex-direction: column;
+  }
+
   .metrics-grid,
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .overview-details {
+    grid-template-columns: 1fr;
+  }
+
+  .actions,
+  .modal-actions {
+    flex-direction: column;
+  }
+
+  .action-group {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .modal-overlay {
+    padding: 0.75rem;
+  }
+
+  .modal-card {
+    height: min(calc(100vh - 1.5rem), 100%);
+    max-height: calc(100vh - 1.5rem);
   }
 }
 </style>

@@ -8,23 +8,14 @@ import (
 
 // SetupRoutes 设置所有API路由
 func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
-	router.GET("/", func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"service": "vape-group-backend",
-			"status":  "ok",
-			"message": "Backend is running. Use /health or /api/* endpoints.",
-		})
-	})
-
 	// 健康检查
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	router.GET("/robots.txt", GetRobotsHandler())
-	router.GET("/sitemap.xml", GetSitemapHandler(db))
 	router.GET("/__tenant_host_check", GetTenantHostCheckHandler())
 	router.GET("/api/tenant/current", GetCurrentTenantHandler())
+	router.GET("/api/platform-config", GetPlatformConfigHandler(db))
 	// 认证相关路由
 	authGroup := router.Group("/api/auth")
 	{
@@ -80,6 +71,8 @@ func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
 		adminGroup.POST("/tenants", CreateTenantHandler(db))
 		adminGroup.PUT("/tenants/:id", UpdateTenantHandler(db))
 		adminGroup.DELETE("/tenants/:id", DeleteTenantHandler(db))
+		adminGroup.GET("/platform-config", GetAdminPlatformConfigHandler(db))
+		adminGroup.PUT("/platform-config", UpdateAdminPlatformConfigHandler(db))
 		adminGroup.GET("/dashboard", GetDashboardHandler(db))
 
 		adminGroup.GET("/products", GetAllProductsHandler(db))
@@ -91,14 +84,14 @@ func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
 		adminGroup.GET("/products/:id/overrides/:tenant_id", GetProductOverrideHandler(db))
 		adminGroup.PUT("/products/:id/overrides/:tenant_id", UpdateProductOverrideHandler(db))
 
-		adminGroup.GET("/tenants/:id/categories", GetAdminCategoriesHandler(db))
-		adminGroup.POST("/tenants/:id/categories", CreateAdminCategoryHandler(db))
-		adminGroup.PUT("/tenants/:id/categories/:category_id", UpdateAdminCategoryHandler(db))
-		adminGroup.DELETE("/tenants/:id/categories/:category_id", DeleteAdminCategoryHandler(db))
+		adminGroup.GET("/categories", GetAdminCategoriesHandler(db))
+		adminGroup.POST("/categories", CreateAdminCategoryHandler(db))
+		adminGroup.PUT("/categories/:category_id", UpdateAdminCategoryHandler(db))
+		adminGroup.DELETE("/categories/:category_id", DeleteAdminCategoryHandler(db))
 
-		adminGroup.GET("/tenants/:id/brands", GetAdminBrandsHandler(db))
-		adminGroup.POST("/tenants/:id/brands", CreateAdminBrandHandler(db))
-		adminGroup.PUT("/tenants/:id/brands/:brand_id", UpdateAdminBrandHandler(db))
-		adminGroup.DELETE("/tenants/:id/brands/:brand_id", DeleteAdminBrandHandler(db))
+		adminGroup.GET("/brands", GetAdminBrandsHandler(db))
+		adminGroup.POST("/brands", CreateAdminBrandHandler(db))
+		adminGroup.PUT("/brands/:id", UpdateAdminBrandHandler(db))
+		adminGroup.DELETE("/brands/:id", DeleteAdminBrandHandler(db))
 	}
 }
