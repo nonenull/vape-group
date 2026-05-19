@@ -67,8 +67,6 @@ services:
       - admin
     restart: unless-stopped
 
-volumes:
-
 networks:
   wp_network:
     name: wp_network
