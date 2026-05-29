@@ -116,6 +116,7 @@ func shouldSkipTenantLookup(c *gin.Context) bool {
 	return path == "/health" ||
 		path == "/favicon.ico" ||
 		strings.HasPrefix(path, "/uploads/") ||
+		strings.HasPrefix(path, "/wp-content/uploads/") ||
 		strings.HasPrefix(path, "/api/admin") ||
 		strings.HasPrefix(path, "/api/auth")
 }

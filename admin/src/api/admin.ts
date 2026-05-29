@@ -1,9 +1,13 @@
 import type {
   BrandRecord,
   CategoryRecord,
+  DomainRecord,
+  DomainDnsRecord,
+  OrderRecord,
   PlatformConfigRecord,
   ProductOptionGroupRecord,
   ProductOverrideRecord,
+  BulkGeneratedOverrideNameRecord,
   ProductRecord,
   ProductSkuVariantRecord,
   ProductVariantRecord,
@@ -140,6 +144,13 @@ const mapProduct = (input: any): ProductRecord => ({
   baseStockQuantity: Number(input.base_stock_quantity ?? input.baseStockQuantity ?? 0),
   category: input.category ?? '',
   categoryId: input.category_id ?? input.categoryId ?? null,
+  categoryIds: Array.isArray(input.category_ids ?? input.categoryIds ?? input.specifications?.categoryIds)
+    ? (input.category_ids ?? input.categoryIds ?? input.specifications?.categoryIds)
+      .map((item: any) => Number(item))
+      .filter((item: number) => Number.isFinite(item) && item > 0)
+    : (input.category_id ?? input.categoryId ?? null) != null
+      ? [Number(input.category_id ?? input.categoryId)]
+      : [],
   brand: input.brand ?? '',
   brandId: input.brand_id ?? input.brandId ?? null,
   previewImage: input.preview_image ?? input.previewImage ?? '',
@@ -148,6 +159,11 @@ const mapProduct = (input: any): ProductRecord => ({
   status: input.status ?? '草稿',
   description: input.description ?? '',
   longDescription: input.long_description ?? input.longDescription ?? '',
+  specificationHtml:
+    input.specification_html ??
+    input.specificationHtml ??
+    input.specifications?.specificationHtml ??
+    '',
   badge: input.badge ?? '',
   rating: Number(input.rating ?? 0),
   reviews: Number(input.reviews ?? 0),
@@ -189,6 +205,7 @@ const productPayload = (payload: Omit<ProductRecord, 'id' | 'updatedAt'>) => ({
   base_stock_quantity: payload.baseStockQuantity,
   category: payload.category,
   category_id: payload.categoryId ?? null,
+  category_ids: payload.categoryIds ?? (payload.categoryId != null ? [payload.categoryId] : []),
   brand: payload.brand ?? '',
   brand_id: payload.brandId ?? null,
   preview_image: payload.previewImage,
@@ -197,6 +214,7 @@ const productPayload = (payload: Omit<ProductRecord, 'id' | 'updatedAt'>) => ({
   status: payload.status,
   description: payload.description,
   long_description: payload.longDescription,
+  specification_html: payload.specificationHtml,
   badge: payload.badge,
   rating: payload.rating,
   reviews: payload.reviews,
@@ -236,9 +254,30 @@ const mapBrand = (input: any): BrandRecord => ({
   description: input.description ?? '',
 })
 
+const mapDomain = (input: any): DomainRecord => ({
+  id: Number(input.id ?? 0),
+  domainName: input.domain_name ?? input.domainName ?? '',
+  registrar: input.registrar ?? 'manual',
+  expireDate: input.expire_date ?? input.expireDate ?? null,
+  dnsRecords: Array.isArray(input.dns_records)
+    ? input.dns_records.map((item: any): DomainDnsRecord => ({
+      type: item.type ?? '',
+      name: item.name ?? '',
+      data: item.data ?? '',
+      ttl: Number(item.ttl ?? 600),
+    }))
+    : [],
+  isBlocked: Boolean(input.is_blocked ?? input.isBlocked ?? false),
+  lastCheckIp: input.last_check_ip ?? input.lastCheckIp ?? null,
+  lastCheckedAt: input.last_checked_at ?? input.lastCheckedAt ?? null,
+})
+
 const mapPlatformConfig = (input: any): PlatformConfigRecord => ({
   id: Number(input.id ?? 0),
   lineContactUrl: input.line_contact_url ?? input.lineContactUrl ?? '',
+  faqHtml: input.faq_html ?? input.faqHtml ?? '',
+  shippingFee: Number(input.shipping_fee ?? input.shippingFee ?? 90),
+  freeShippingThreshold: Number(input.free_shipping_threshold ?? input.freeShippingThreshold ?? 1200),
   featuredCategoryIds: Array.isArray(input.featured_category_ids ?? input.featuredCategoryIds)
     ? (input.featured_category_ids ?? input.featuredCategoryIds)
       .map((item: any) => Number(item))
@@ -248,6 +287,26 @@ const mapPlatformConfig = (input: any): PlatformConfigRecord => ({
     ? (input.featured_brand_ids ?? input.featuredBrandIds)
       .map((item: any) => Number(item))
       .filter((item: number) => Number.isFinite(item) && item > 0)
+    : [],
+})
+
+const mapOrder = (input: any): OrderRecord => ({
+  id: Number(input.id ?? 0),
+  tenantId: Number(input.tenant_id ?? input.tenantId ?? 0),
+  orderNo: input.order_no ?? input.orderNo ?? `#${input.id ?? 0}`,
+  customerName: input.line_id ?? input.customerName ?? '未提供',
+  totalAmount: Number(input.total_amount ?? input.totalAmount ?? 0),
+  status: input.status ?? '已下单',
+  paymentMethod: input.payment_method ?? input.paymentMethod ?? '',
+  createdAt: input.created_at ?? input.createdAt ?? '',
+  items: Array.isArray(input.items)
+    ? input.items.map((item: any) => ({
+      name: item.name ?? `商品 #${item.product_id ?? item.productId ?? ''}`,
+      sku: item.variant_sku ?? item.sku ?? '',
+      variantLabel: item.variant_name ?? item.variantLabel ?? '',
+      quantity: Number(item.quantity ?? 0),
+      price: Number(item.price ?? 0),
+    }))
     : [],
 })
 
@@ -272,6 +331,9 @@ export const adminAPI = {
       method: 'PUT',
       body: JSON.stringify({
         line_contact_url: payload.lineContactUrl,
+        faq_html: payload.faqHtml ?? '',
+        shipping_fee: payload.shippingFee,
+        free_shipping_threshold: payload.freeShippingThreshold,
         featured_category_ids: payload.featuredCategoryIds,
         featured_brand_ids: payload.featuredBrandIds,
       }),
@@ -343,6 +405,20 @@ export const adminAPI = {
       }),
     }))
   },
+  async bulkGenerateCustomNames(productIds: number[], tenantId: number, instruction: string) {
+    return (await request<any[]>('/api/admin/products/bulk-generate-custom-names', {
+      method: 'POST',
+      body: JSON.stringify({
+        product_ids: productIds,
+        tenant_id: tenantId,
+        instruction,
+      }),
+    })).map((item) => ({
+      productId: Number(item.product_id ?? 0),
+      tenantId: Number(item.tenant_id ?? 0),
+      customName: item.custom_name ?? '',
+    } satisfies BulkGeneratedOverrideNameRecord))
+  },
   async getCategories() {
     return (await request<any[]>('/api/admin/categories')).map(mapCategory)
   },
@@ -398,5 +474,64 @@ export const adminAPI = {
     return request<{ success: boolean }>(`/api/admin/brands/${brandId}`, {
       method: 'DELETE',
     })
+  },
+  async getDomains(search = '') {
+    return (await request<any[]>(`/api/admin/domains${search ? `?search=${encodeURIComponent(search)}` : ''}`)).map(mapDomain)
+  },
+  async createDomain(payload: Omit<DomainRecord, 'id'>) {
+    return mapDomain(await request<any>('/api/admin/domains', {
+      method: 'POST',
+      body: JSON.stringify({
+        domain_name: payload.domainName,
+        registrar: payload.registrar,
+        expire_date: payload.expireDate || null,
+      }),
+    }))
+  },
+  async updateDomain(domainId: number, payload: Omit<DomainRecord, 'id'>) {
+    return mapDomain(await request<any>(`/api/admin/domains/${domainId}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        domain_name: payload.domainName,
+        registrar: payload.registrar,
+        expire_date: payload.expireDate || null,
+      }),
+    }))
+  },
+  deleteDomain(domainId: number) {
+    return request<{ success: boolean }>(`/api/admin/domains/${domainId}`, {
+      method: 'DELETE',
+    })
+  },
+  syncDomains(ip?: string) {
+    return request<{ status: string; created: number; updated: number; total: number }>('/api/admin/domains/sync', {
+      method: 'POST',
+      body: JSON.stringify({ ip: ip || null }),
+    })
+  },
+  checkDomainDns() {
+    return request<{ checked: number; blocked: number; total: number }>('/api/admin/domains/check-dns', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  },
+  getDomainDnsRecords(domainId: number) {
+    return request<any[]>(`/api/admin/domains/${domainId}/dns`).then((records) =>
+      records.map((item): DomainDnsRecord => ({
+        type: item.type ?? '',
+        name: item.name ?? '',
+        data: item.data ?? '',
+        ttl: Number(item.ttl ?? 600),
+      })),
+    )
+  },
+  updateDomainDnsRecords(domainId: number, records: DomainDnsRecord[]) {
+    return request<{ success: boolean }>(`/api/admin/domains/${domainId}/dns`, {
+      method: 'PUT',
+      body: JSON.stringify(records),
+    })
+  },
+  async getOrders() {
+    return (await request<any[]>('/api/admin/orders')).map(mapOrder)
   },
 }

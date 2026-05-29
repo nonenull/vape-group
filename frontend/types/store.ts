@@ -29,6 +29,7 @@ export interface Product {
   salePrice?: number
   category: string
   categoryId?: number | null
+  categoryIds?: number[]
   brand?: string
   rating: number
   reviews: number
@@ -39,6 +40,7 @@ export interface Product {
   badge?: string
   description: string
   longDescription: string
+  specificationHtml: string
   flavors: string[]
   variants: ProductVariant[]
   optionGroups: ProductOptionGroup[]
@@ -81,6 +83,9 @@ export interface TenantInfo {
 export interface PlatformConfig {
   id: number
   lineContactUrl: string
+  faqHtml: string
+  shippingFee: number
+  freeShippingThreshold: number
   featuredCategoryIds: number[]
   featuredBrandIds: number[]
 }
@@ -99,6 +104,29 @@ export interface Brand {
   description?: string
 }
 
+export interface StoreOrderItem {
+  id: number
+  productId: number
+  name: string
+  variantName: string
+  variantSku: string
+  quantity: number
+  price: number
+}
+
+export interface StoreOrder {
+  id: number
+  totalAmount: number
+  status: string
+  lineId: string
+  phone: string
+  convenienceStore: string
+  shippingAddress: string
+  paymentMethod: string
+  items: StoreOrderItem[]
+  createdAt: string
+}
+
 export interface ProductListApiItem {
   id: number
   sku: string
@@ -112,12 +140,14 @@ export interface ProductListApiItem {
   is_active?: boolean
   category?: string
   category_id?: number | null
+  category_ids?: number[]
   brand?: string
   preview_image?: string
   gallery?: string[]
   status?: string
   description?: string
   long_description?: string
+  specification_html?: string
   badge?: string
   rating?: number
   reviews?: number

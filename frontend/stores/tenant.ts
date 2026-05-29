@@ -9,6 +9,9 @@ export const useTenantStore = defineStore('tenant', {
     platformConfig: {
       id: 0,
       lineContactUrl: '',
+      faqHtml: '',
+      shippingFee: 90,
+      freeShippingThreshold: 1200,
       featuredCategoryIds: [],
       featuredBrandIds: [],
     } as PlatformConfig,

@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { RouterLink, RouterView, useRouter } from 'vue-router'
+import { RouterLink, RouterView } from 'vue-router'
 import { useAdminStore } from '@/stores/admin'
 
-const router = useRouter()
 const store = useAdminStore()
 
 onMounted(() => {
@@ -29,6 +28,7 @@ onMounted(() => {
         <RouterLink to="/products">商品</RouterLink>
         <RouterLink to="/categories">分類</RouterLink>
         <RouterLink to="/brands">品牌</RouterLink>
+        <RouterLink to="/domains">域名</RouterLink>
         <RouterLink to="/tenants">租戶</RouterLink>
         <RouterLink to="/platform-settings">平台配置</RouterLink>
         <RouterLink to="/orders">訂單</RouterLink>
@@ -45,10 +45,6 @@ onMounted(() => {
         <div>
           <p class="topbar-label">WordPress inspired workspace</p>
           <h1>管理後台</h1>
-        </div>
-        <div class="topbar-actions">
-          <button class="ghost-button" type="button" @click="router.push('/categories')">管理分類</button>
-          <button class="primary-button" type="button" @click="router.push('/products')">新增商品</button>
         </div>
       </header>
 
@@ -163,28 +159,6 @@ onMounted(() => {
 
 .admin-topbar h1 {
   font-size: 1.5rem;
-}
-
-.topbar-actions {
-  display: flex;
-  gap: 0.75rem;
-}
-
-.ghost-button,
-.primary-button {
-  min-height: 2.5rem;
-  padding: 0.65rem 0.95rem;
-  border-radius: 0.375rem;
-  font-weight: 600;
-  border: 1px solid var(--wp-border-strong);
-  background: #fff;
-  color: var(--wp-text);
-}
-
-.primary-button {
-  background: var(--wp-blue);
-  color: #fff;
-  border-color: var(--wp-blue);
 }
 
 .admin-main {

@@ -48,6 +48,9 @@ export interface TenantRecord {
 export interface PlatformConfigRecord {
   id: number
   lineContactUrl: string
+  faqHtml: string
+  shippingFee: number
+  freeShippingThreshold: number
   featuredCategoryIds: number[]
   featuredBrandIds: number[]
 }
@@ -61,6 +64,7 @@ export interface ProductRecord {
   baseStockQuantity: number
   category: string
   categoryId?: number | null
+  categoryIds?: number[]
   brand?: string
   brandId?: number | null
   previewImage: string
@@ -69,6 +73,7 @@ export interface ProductRecord {
   status: '上架中' | '草稿' | '缺貨'
   description?: string
   longDescription?: string
+  specificationHtml?: string
   badge?: string
   rating?: number
   reviews?: number
@@ -94,6 +99,24 @@ export interface BrandRecord {
   description?: string
 }
 
+export interface DomainRecord {
+  id: number
+  domainName: string
+  registrar: string
+  expireDate?: string | null
+  dnsRecords?: DomainDnsRecord[]
+  isBlocked?: boolean
+  lastCheckIp?: string | null
+  lastCheckedAt?: string | null
+}
+
+export interface DomainDnsRecord {
+  type: string
+  name: string
+  data: string
+  ttl: number
+}
+
 export interface ProductOverrideRecord {
   id: number
   tenantId: number
@@ -109,13 +132,19 @@ export interface ProductOverrideRecord {
   isVisible: boolean
 }
 
+export interface BulkGeneratedOverrideNameRecord {
+  productId: number
+  tenantId: number
+  customName: string
+}
+
 export interface OrderRecord {
   id: number
   tenantId: number
   orderNo: string
   customerName: string
   totalAmount: number
-  status: '待付款' | '已付款' | '已出貨' | '已完成'
+  status: '已下单' | '已出貨' | '已完成'
   paymentMethod: string
   createdAt: string
   items?: Array<{
@@ -134,7 +163,7 @@ export const orderRecords: OrderRecord[] = [
     orderNo: 'VG20260507001',
     customerName: '陳先生',
     totalAmount: 1890,
-    status: '已付款',
+    status: '已下单',
     paymentMethod: '信用卡',
     createdAt: '2026-05-07 09:20',
     items: [
@@ -153,7 +182,7 @@ export const orderRecords: OrderRecord[] = [
     orderNo: 'VG20260507002',
     customerName: '林小姐',
     totalAmount: 990,
-    status: '待付款',
+    status: '已下单',
     paymentMethod: 'ATM 轉帳',
     createdAt: '2026-05-07 10:05',
     items: [

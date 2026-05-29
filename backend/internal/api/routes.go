@@ -1,6 +1,9 @@
 package api
 
 import (
+	"strconv"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/vape-group/backend/config"
 	"gorm.io/gorm"
@@ -8,6 +11,14 @@ import (
 
 // SetupRoutes 设置所有API路由
 func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
+	cacheSeconds, _ := strconv.Atoi(cfg.ProductListCacheSeconds)
+	if cacheSeconds < 0 {
+		cacheSeconds = 0
+	}
+	productListCache := newProductListCache(time.Duration(cacheSeconds) * time.Second)
+	categoryDescendantCache := newCategoryDescendantCache()
+	registerCatalogCaches(productListCache, categoryDescendantCache)
+
 	// 健康检查
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -28,7 +39,7 @@ func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
 	// 商品相关路由
 	productGroup := router.Group("/api/products")
 	{
-		productGroup.GET("", GetProductsHandler(db))
+		productGroup.GET("", GetProductsHandler(db, productListCache, categoryDescendantCache))
 		productGroup.GET("/:id", GetProductDetailHandler(db))
 		productGroup.POST("", CreateProductHandler(db))
 		productGroup.PUT("/:id", UpdateProductHandler(db))
@@ -78,6 +89,7 @@ func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
 		adminGroup.GET("/products", GetAllProductsHandler(db))
 		adminGroup.POST("/products", CreateProductAdminHandler(db))
 		adminGroup.PUT("/products/bulk-update", BulkUpdateProductsAdminHandler(db))
+		adminGroup.POST("/products/bulk-generate-custom-names", BulkGenerateProductOverrideNamesHandler(db, cfg))
 		adminGroup.PUT("/products/:id", UpdateProductAdminHandler(db))
 		adminGroup.DELETE("/products/:id", DeleteProductAdminHandler(db))
 		adminGroup.POST("/uploads/images", UploadImageHandler(cfg))
@@ -93,5 +105,14 @@ func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
 		adminGroup.POST("/brands", CreateAdminBrandHandler(db))
 		adminGroup.PUT("/brands/:id", UpdateAdminBrandHandler(db))
 		adminGroup.DELETE("/brands/:id", DeleteAdminBrandHandler(db))
+		adminGroup.GET("/domains", GetDomainsHandler(db))
+		adminGroup.POST("/domains", CreateDomainHandler(db))
+		adminGroup.POST("/domains/sync", SyncDomainsFromGoDaddyHandler(db, cfg))
+		adminGroup.POST("/domains/check-dns", CheckDomainDNSStatusHandler(db, cfg))
+		adminGroup.GET("/domains/:id/dns", GetDomainDNSRecordsHandler(db, cfg))
+		adminGroup.PUT("/domains/:id/dns", UpdateDomainDNSRecordsHandler(db, cfg))
+		adminGroup.PUT("/domains/:id", UpdateDomainHandler(db))
+		adminGroup.DELETE("/domains/:id", DeleteDomainHandler(db))
+		adminGroup.GET("/orders", GetAdminOrdersHandler(db))
 	}
 }

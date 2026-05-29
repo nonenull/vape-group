@@ -28,6 +28,9 @@ type Tenant struct {
 type PlatformConfig struct {
 	ID                  uint      `gorm:"primaryKey" json:"id"`
 	LineContactURL      string    `gorm:"type:varchar(1024)" json:"line_contact_url"`
+	FaqHTML             string    `gorm:"type:longtext" json:"faq_html"`
+	ShippingFee         float64   `json:"shipping_fee"`
+	FreeShippingThreshold float64 `json:"free_shipping_threshold"`
 	FeaturedCategoryIDs UIntArray `gorm:"type:json" json:"featured_category_ids"`
 	FeaturedBrandIDs    UIntArray `gorm:"type:json" json:"featured_brand_ids"`
 	CreatedAt           time.Time `json:"created_at"`
@@ -117,6 +120,20 @@ type Brand struct {
 	Description *string   `json:"description"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// Domain 域名管理表
+type Domain struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	DomainName    string    `gorm:"type:varchar(255);uniqueIndex" json:"domain_name"`
+	Registrar     string    `gorm:"type:varchar(100)" json:"registrar"`
+	ExpireDate    *time.Time `json:"expire_date"`
+	DNSRecords    JSONArray `gorm:"type:json" json:"dns_records"`
+	IsBlocked     bool      `gorm:"default:false" json:"is_blocked"`
+	LastCheckIP   *string   `gorm:"type:varchar(45)" json:"last_check_ip"`
+	LastCheckedAt *time.Time `json:"last_checked_at"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // Order 订单表
@@ -441,21 +458,73 @@ func remapProductCategory(specs JSONMap, legacyToShared map[uint]uint, sharedNam
 		return false
 	}
 
+	changed := false
 	categoryID, ok := jsonMapUint(specs, "categoryId")
-	if !ok {
-		return false
+	if ok {
+		sharedID, exists := legacyToShared[categoryID]
+		if exists && sharedID != categoryID {
+			specs["categoryId"] = sharedID
+			if name, found := sharedNameByID[sharedID]; found {
+				specs["category"] = name
+			}
+			changed = true
+		}
 	}
 
-	sharedID, ok := legacyToShared[categoryID]
-	if !ok || sharedID == categoryID {
-		return false
+	rawCategoryIDs, hasCategoryIDs := specs["categoryIds"]
+	if hasCategoryIDs {
+		normalized := make([]uint, 0)
+		seen := make(map[uint]struct{})
+		appendID := func(id uint) {
+			if id == 0 {
+				return
+			}
+			if _, exists := seen[id]; exists {
+				return
+			}
+			seen[id] = struct{}{}
+			normalized = append(normalized, id)
+		}
+
+		switch typed := rawCategoryIDs.(type) {
+		case []interface{}:
+			for _, item := range typed {
+				var id uint
+				switch value := item.(type) {
+				case float64:
+					if value > 0 {
+						id = uint(value)
+					}
+				case int:
+					if value > 0 {
+						id = uint(value)
+					}
+				case uint:
+					id = value
+				}
+				if id == 0 {
+					continue
+				}
+				if sharedID, exists := legacyToShared[id]; exists && sharedID != id {
+					id = sharedID
+					changed = true
+				}
+				appendID(id)
+			}
+		case []uint:
+			for _, id := range typed {
+				if sharedID, exists := legacyToShared[id]; exists && sharedID != id {
+					id = sharedID
+					changed = true
+				}
+				appendID(id)
+			}
+		}
+
+		specs["categoryIds"] = normalized
 	}
 
-	specs["categoryId"] = sharedID
-	if name, exists := sharedNameByID[sharedID]; exists {
-		specs["category"] = name
-	}
-	return true
+	return changed
 }
 
 func jsonMapUint(source JSONMap, key string) (uint, bool) {

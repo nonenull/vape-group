@@ -223,6 +223,10 @@
 }
 
 @media (max-width: 720px) {
+  .store-header {
+    position: static;
+  }
+
   .header-inner,
   .store-main {
     width: min(calc(100% - 24px), var(--content-width));

@@ -1,16 +1,25 @@
 package api
 
 import (
+	"bytes"
 	"crypto/rand"
+	"context"
+	"encoding/json"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mozillazg/go-pinyin"
@@ -80,6 +89,9 @@ type tenantResponse struct {
 
 type platformConfigPayload struct {
 	LineContactURL      string `json:"line_contact_url"`
+	FaqHTML             string `json:"faq_html"`
+	ShippingFee         float64 `json:"shipping_fee"`
+	FreeShippingThreshold float64 `json:"free_shipping_threshold"`
 	FeaturedCategoryIDs []uint `json:"featured_category_ids"`
 	FeaturedBrandIDs    []uint `json:"featured_brand_ids"`
 }
@@ -87,8 +99,41 @@ type platformConfigPayload struct {
 type platformConfigResponse struct {
 	ID                  uint   `json:"id"`
 	LineContactURL      string `json:"line_contact_url"`
+	FaqHTML             string `json:"faq_html"`
+	ShippingFee         float64 `json:"shipping_fee"`
+	FreeShippingThreshold float64 `json:"free_shipping_threshold"`
 	FeaturedCategoryIDs []uint `json:"featured_category_ids"`
 	FeaturedBrandIDs    []uint `json:"featured_brand_ids"`
+}
+
+type domainPayload struct {
+	DomainName string  `json:"domain_name"`
+	Registrar  string  `json:"registrar"`
+	ExpireDate *string `json:"expire_date"`
+}
+
+type dnsRecordPayload struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+	Data string `json:"data"`
+	TTL  int    `json:"ttl"`
+}
+
+type domainSyncPayload struct {
+	IP *string `json:"ip"`
+}
+
+type domainResponse struct {
+	ID            uint              `json:"id"`
+	DomainName    string            `json:"domain_name"`
+	Registrar     string            `json:"registrar"`
+	ExpireDate    *string           `json:"expire_date,omitempty"`
+	DNSRecords    []dnsRecordPayload `json:"dns_records"`
+	IsBlocked     bool              `json:"is_blocked"`
+	LastCheckIP   *string           `json:"last_check_ip,omitempty"`
+	LastCheckedAt *time.Time        `json:"last_checked_at,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
 type productPayload struct {
@@ -98,6 +143,7 @@ type productPayload struct {
 	BaseStockQuantity int      `json:"base_stock_quantity"`
 	Category          string   `json:"category"`
 	CategoryID        *uint    `json:"category_id"`
+	CategoryIDs       []uint   `json:"category_ids"`
 	Brand             string   `json:"brand"`
 	BrandID           *uint    `json:"brand_id"`
 	PreviewImage      string   `json:"preview_image"`
@@ -107,6 +153,7 @@ type productPayload struct {
 	IsActive          bool     `json:"is_active"`
 	Description       string   `json:"description"`
 	LongDescription   string   `json:"long_description"`
+	SpecificationHTML string   `json:"specification_html"`
 	Badge             string   `json:"badge"`
 	Rating            float64  `json:"rating"`
 	Reviews           int      `json:"reviews"`
@@ -128,6 +175,9 @@ func getOrCreatePlatformConfig(db *gorm.DB) (models.PlatformConfig, error) {
 
 	config = models.PlatformConfig{
 		LineContactURL:      "",
+		FaqHTML:             "",
+		ShippingFee:         90,
+		FreeShippingThreshold: 1200,
 		FeaturedCategoryIDs: models.UIntArray{},
 		FeaturedBrandIDs:    models.UIntArray{},
 	}
@@ -141,9 +191,135 @@ func platformConfigToResponse(config models.PlatformConfig) platformConfigRespon
 	return platformConfigResponse{
 		ID:                  config.ID,
 		LineContactURL:      config.LineContactURL,
+		FaqHTML:             config.FaqHTML,
+		ShippingFee:         config.ShippingFee,
+		FreeShippingThreshold: config.FreeShippingThreshold,
 		FeaturedCategoryIDs: []uint(config.FeaturedCategoryIDs),
 		FeaturedBrandIDs:    []uint(config.FeaturedBrandIDs),
 	}
+}
+
+func domainToResponse(domain models.Domain) domainResponse {
+	var expireDate *string
+	if domain.ExpireDate != nil {
+		formatted := domain.ExpireDate.Format("2006-01-02")
+		expireDate = &formatted
+	}
+
+	dnsRecords := make([]dnsRecordPayload, 0, len(domain.DNSRecords))
+	for _, item := range domain.DNSRecords {
+		recordMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ttl := 600
+		switch value := recordMap["ttl"].(type) {
+		case float64:
+			ttl = int(value)
+		case int:
+			ttl = value
+		}
+		dnsRecords = append(dnsRecords, dnsRecordPayload{
+			Type: firstNonEmptyString(fmt.Sprintf("%v", recordMap["type"])),
+			Name: firstNonEmptyString(fmt.Sprintf("%v", recordMap["name"])),
+			Data: firstNonEmptyString(fmt.Sprintf("%v", recordMap["data"])),
+			TTL:  ttl,
+		})
+	}
+
+	return domainResponse{
+		ID:            domain.ID,
+		DomainName:    domain.DomainName,
+		Registrar:     domain.Registrar,
+		ExpireDate:    expireDate,
+		DNSRecords:    dnsRecords,
+		IsBlocked:     domain.IsBlocked,
+		LastCheckIP:   domain.LastCheckIP,
+		LastCheckedAt: domain.LastCheckedAt,
+		CreatedAt:     domain.CreatedAt,
+		UpdatedAt:     domain.UpdatedAt,
+	}
+}
+
+func parseOptionalDate(value *string) (*time.Time, error) {
+	if value == nil {
+		return nil, nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse("2006-01-02", trimmed)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+func dnsRecordsToJSONArray(records []dnsRecordPayload) models.JSONArray {
+	result := make(models.JSONArray, 0, len(records))
+	for _, record := range records {
+		result = append(result, models.JSONMap{
+			"type": record.Type,
+			"name": record.Name,
+			"data": record.Data,
+			"ttl":  record.TTL,
+		})
+	}
+	return result
+}
+
+func godaddyRequest[T any](cfg *config.Config, method, path string, body io.Reader) (T, error) {
+	var result T
+	if strings.TrimSpace(cfg.GoDaddyAPIKey) == "" || strings.TrimSpace(cfg.GoDaddyAPISecret) == "" {
+		return result, errors.New("GoDaddy API credentials are not configured")
+	}
+
+	req, err := http.NewRequest(method, strings.TrimRight(cfg.GoDaddyAPIBaseURL, "/")+path, body)
+	if err != nil {
+		return result, err
+	}
+	req.Header.Set("Authorization", "sso-key "+cfg.GoDaddyAPIKey+":"+cfg.GoDaddyAPISecret)
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return result, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		payload, _ := io.ReadAll(resp.Body)
+		return result, fmt.Errorf("GoDaddy API request failed: %s", strings.TrimSpace(string(payload)))
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil && !errors.Is(err, io.EOF) {
+		return result, err
+	}
+	return result, nil
+}
+
+func resolveDomainIP(serverAddr, domainName string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialer := net.Dialer{}
+			return dialer.DialContext(ctx, "udp", serverAddr)
+		},
+	}
+
+	ips, err := resolver.LookupHost(ctx, domainName)
+	if err != nil || len(ips) == 0 {
+		return "", err
+	}
+	return ips[0], nil
 }
 
 type productVariantPayload struct {
@@ -176,6 +352,7 @@ type productResponse struct {
 	IsActive            bool                   `json:"is_active"`
 	Category            string                 `json:"category"`
 	CategoryID          *uint                  `json:"category_id,omitempty"`
+	CategoryIDs         []uint                 `json:"category_ids"`
 	Brand               string                 `json:"brand"`
 	BrandID             *uint                  `json:"brand_id,omitempty"`
 	PreviewImage        string                 `json:"preview_image"`
@@ -183,6 +360,7 @@ type productResponse struct {
 	Status              string                 `json:"status"`
 	Description         string                 `json:"description"`
 	LongDescription     string                 `json:"long_description"`
+	SpecificationHTML   string                 `json:"specification_html"`
 	Badge               string                 `json:"badge"`
 	Rating              float64                `json:"rating"`
 	Reviews             int                    `json:"reviews"`
@@ -215,6 +393,52 @@ type productOverridePayload struct {
 	IsVisible           bool     `json:"is_visible"`
 }
 
+type generateOverrideDraftPayload struct {
+	Instruction string `json:"instruction"`
+}
+
+type generatedOverrideDraftResponse struct {
+	CustomName        string `json:"custom_name"`
+	CustomDescription string `json:"custom_description"`
+	SEOTitle          string `json:"seo_title"`
+	SEODescription    string `json:"seo_description"`
+}
+
+type bulkGenerateOverrideNamesPayload struct {
+	TenantID    uint   `json:"tenant_id"`
+	ProductIDs  []uint `json:"product_ids"`
+	Instruction string `json:"instruction"`
+}
+
+type generatedOverrideNameResponse struct {
+	ProductID  uint   `json:"product_id"`
+	TenantID   uint   `json:"tenant_id"`
+	CustomName string `json:"custom_name"`
+}
+
+type deepSeekChatCompletionRequest struct {
+	Model          string                          `json:"model"`
+	Messages       []deepSeekChatCompletionMessage `json:"messages"`
+	ResponseFormat map[string]string               `json:"response_format,omitempty"`
+	Temperature    float64                         `json:"temperature,omitempty"`
+}
+
+type deepSeekChatCompletionMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type deepSeekChatCompletionResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
 type orderItemPayload struct {
 	ProductID   uint   `json:"product_id"`
 	VariantName string `json:"variant_name"`
@@ -234,10 +458,151 @@ type createOrderPayload struct {
 type orderItemResponse struct {
 	ID          uint    `json:"id"`
 	ProductID   uint    `json:"product_id"`
+	Name        string  `json:"name"`
 	VariantName string  `json:"variant_name"`
 	VariantSKU  string  `json:"variant_sku"`
 	Quantity    int     `json:"quantity"`
 	Price       float64 `json:"price"`
+}
+
+type productListResponse struct {
+	Data  []productResponse `json:"data"`
+	Total int64             `json:"total"`
+	Page  int               `json:"page"`
+	Limit int               `json:"limit"`
+}
+
+type productListCacheEntry struct {
+	value     productListResponse
+	expiresAt time.Time
+}
+
+type productListCache struct {
+	ttl   time.Duration
+	mutex sync.RWMutex
+	items map[string]productListCacheEntry
+}
+
+func newProductListCache(ttl time.Duration) *productListCache {
+	return &productListCache{
+		ttl:   ttl,
+		items: make(map[string]productListCacheEntry),
+	}
+}
+
+func (c *productListCache) get(key string) (productListResponse, bool) {
+	if c == nil || c.ttl <= 0 {
+		return productListResponse{}, false
+	}
+
+	c.mutex.RLock()
+	entry, exists := c.items[key]
+	c.mutex.RUnlock()
+	if !exists {
+		return productListResponse{}, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		c.mutex.Lock()
+		delete(c.items, key)
+		c.mutex.Unlock()
+		return productListResponse{}, false
+	}
+	return entry.value, true
+}
+
+func (c *productListCache) set(key string, value productListResponse) {
+	if c == nil || c.ttl <= 0 {
+		return
+	}
+
+	c.mutex.Lock()
+	c.items[key] = productListCacheEntry{
+		value:     value,
+		expiresAt: time.Now().Add(c.ttl),
+	}
+	c.mutex.Unlock()
+}
+
+func (c *productListCache) clear() {
+	if c == nil {
+		return
+	}
+
+	c.mutex.Lock()
+	c.items = make(map[string]productListCacheEntry)
+	c.mutex.Unlock()
+}
+
+type categoryDescendantCache struct {
+	mutex sync.RWMutex
+	items map[uint]map[uint]struct{}
+}
+
+var sharedProductListCache *productListCache
+var sharedCategoryDescendantCache *categoryDescendantCache
+
+func newCategoryDescendantCache() *categoryDescendantCache {
+	return &categoryDescendantCache{
+		items: make(map[uint]map[uint]struct{}),
+	}
+}
+
+func registerCatalogCaches(productCache *productListCache, categoryCache *categoryDescendantCache) {
+	sharedProductListCache = productCache
+	sharedCategoryDescendantCache = categoryCache
+}
+
+func invalidateCatalogCaches() {
+	if sharedProductListCache != nil {
+		sharedProductListCache.clear()
+	}
+}
+
+func invalidateCategoryCaches() {
+	invalidateCatalogCaches()
+	if sharedCategoryDescendantCache != nil {
+		sharedCategoryDescendantCache.clear()
+	}
+}
+
+func (c *categoryDescendantCache) get(categoryID uint) (map[uint]struct{}, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mutex.RLock()
+	value, exists := c.items[categoryID]
+	c.mutex.RUnlock()
+	return value, exists
+}
+
+func (c *categoryDescendantCache) set(categoryID uint, value map[uint]struct{}) {
+	if c == nil {
+		return
+	}
+	c.mutex.Lock()
+	c.items[categoryID] = value
+	c.mutex.Unlock()
+}
+
+func (c *categoryDescendantCache) clear() {
+	if c == nil {
+		return
+	}
+	c.mutex.Lock()
+	c.items = make(map[uint]map[uint]struct{})
+	c.mutex.Unlock()
+}
+
+func buildProductListCacheKey(tenantID uint, page, limit int, keyword, category, brand, sortBy string) string {
+	return strings.Join([]string{
+		strconv.FormatUint(uint64(tenantID), 10),
+		strconv.Itoa(page),
+		strconv.Itoa(limit),
+		strings.TrimSpace(keyword),
+		strings.TrimSpace(category),
+		strings.TrimSpace(brand),
+		strings.TrimSpace(sortBy),
+	}, "|")
 }
 
 type orderResponse struct {
@@ -268,6 +633,9 @@ type categoryResponse struct {
 	ParentID  *uint  `json:"parent_id"`
 	SortOrder int    `json:"sort_order"`
 }
+
+const defaultUncategorizedCategoryName = "未分類"
+const defaultUncategorizedCategoryCode = "uncategorized"
 
 type brandPayload struct {
 	Name        string `json:"name"`
@@ -491,6 +859,65 @@ func jsonUint(source models.JSONMap, key string) *uint {
 	return nil
 }
 
+func jsonUintSlice(source models.JSONMap, key string, fallback []uint) []uint {
+	if source == nil {
+		return fallback
+	}
+
+	raw, exists := source[key]
+	if !exists || raw == nil {
+		return fallback
+	}
+
+	var values []uint
+	switch typed := raw.(type) {
+	case []interface{}:
+		values = make([]uint, 0, len(typed))
+		for _, item := range typed {
+			switch value := item.(type) {
+			case float64:
+				if value > 0 {
+					values = append(values, uint(value))
+				}
+			case int:
+				if value > 0 {
+					values = append(values, uint(value))
+				}
+			case uint:
+				if value > 0 {
+					values = append(values, value)
+				}
+			}
+		}
+	case []uint:
+		values = append(values, typed...)
+	default:
+		return fallback
+	}
+
+	if len(values) == 0 {
+		return fallback
+	}
+
+	seen := make(map[uint]struct{}, len(values))
+	result := make([]uint, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+
+	if len(result) == 0 {
+		return fallback
+	}
+	return result
+}
+
 func jsonStringSlice(source models.JSONMap, key string, fallback []string) []string {
 	if source == nil {
 		return fallback
@@ -658,6 +1085,329 @@ func skuVariantSliceToJSONArray(values []productSkuVariantPayload) models.JSONAr
 		result = append(result, entry)
 	}
 	return result
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func limitRunes(value string, max int) string {
+	trimmed := strings.TrimSpace(value)
+	if max <= 0 {
+		return ""
+	}
+
+	runes := []rune(trimmed)
+	if len(runes) <= max {
+		return trimmed
+	}
+	return strings.TrimSpace(string(runes[:max]))
+}
+
+func jsonStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func jsonArrayToStringSlice(values models.JSONArray) []string {
+	result := make([]string, 0, len(values))
+	for _, item := range values {
+		text := strings.TrimSpace(fmt.Sprintf("%v", item))
+		if text == "" {
+			continue
+		}
+		result = append(result, text)
+	}
+	return result
+}
+
+func buildOverrideGenerationPrompt(product models.Product, tenant models.Tenant, override models.TenantProductOverride, instruction string) string {
+	specs := product.Specifications
+	baseName := firstNonEmptyString(
+		jsonStringValue(override.CustomName),
+		product.BaseName,
+		jsonString(specs, "name", ""),
+	)
+	description := firstNonEmptyString(
+		jsonStringValue(override.CustomDescription),
+		jsonString(specs, "description", ""),
+		jsonString(specs, "longDescription", ""),
+	)
+	brand := jsonString(specs, "brand", "")
+	category := jsonString(specs, "category", "")
+	status := jsonString(specs, "status", "")
+	flavors := strings.Join(jsonStringSlice(specs, "flavors", nil), "、")
+	gallery := strings.Join(jsonArrayToStringSlice(product.BaseImages), "\n")
+	detailImages := strings.Join(jsonArrayToStringSlice(product.DetailImages), "\n")
+	currentSEOTitle := firstNonEmptyString(jsonStringValue(override.SEOTitle), jsonString(specs, "seoTitle", ""))
+	currentSEODescription := firstNonEmptyString(jsonStringValue(override.SEODescription), jsonString(specs, "seoDescription", ""))
+	tenantTitle := jsonString(tenant.SEOConfig, "title", "")
+	tenantDescription := jsonString(tenant.SEOConfig, "description", "")
+
+	return strings.TrimSpace(fmt.Sprintf(`
+你是电商内容编辑，请为指定租户生成“租户商品覆写”文案。
+
+输出要求：
+1. 只返回 JSON，不要输出 markdown、说明文字或代码块。
+2. JSON 字段固定为：custom_name、custom_description、seo_title、seo_description。
+3. custom_name 保持自然、适合商品标题，尽量不超过 60 个字。
+4. custom_description 写成面向消费者的简洁介绍，突出卖点、口味/适用场景，不要虚构功效，建议 80-220 个字。
+5. seo_title 适合搜索结果，尽量不超过 65 个字。
+6. seo_description 适合搜索摘要，尽量不超过 160 个字。
+7. 文案语言使用繁體中文，并尽量贴近当前租户品牌语气。
+8. 不要编造价格、库存、配送、赠品、法律合规承诺；如果资料不足，就基于已有信息做稳妥表达。
+
+租户信息：
+- 租户名称：%s
+- 主域名：%s
+- 租户 SEO 标题：%s
+- 租户 SEO 描述：%s
+
+商品基础信息：
+- 商品 ID：%d
+- SKU：%s
+- 商品名称：%s
+- 品牌：%s
+- 分类：%s
+- 状态：%s
+- 基础售价：%.2f
+- 基础库存：%d
+- 商品简介：%s
+- 商品长描述：%s
+- 口味：%s
+- 规格 HTML：%s
+- 主图列表：%s
+- 详情图列表：%s
+
+当前覆写（如有）：
+- custom_name：%s
+- custom_description：%s
+- seo_title：%s
+- seo_description：%s
+
+额外要求：
+%s
+`, tenant.Name, tenant.Domain, tenantTitle, tenantDescription, product.ID, product.SKU, baseName, brand, category, status, product.BasePrice, product.BaseStockQuantity, jsonString(specs, "description", description), jsonString(specs, "longDescription", ""), flavors, jsonString(specs, "specificationHtml", ""), gallery, detailImages, jsonStringValue(override.CustomName), jsonStringValue(override.CustomDescription), currentSEOTitle, currentSEODescription, firstNonEmptyString(instruction, "若无额外要求，请输出最适合该租户站点的默认文案。")))
+}
+
+func buildOverrideNameGenerationPrompt(product models.Product, tenant models.Tenant, override models.TenantProductOverride, instruction string) string {
+	specs := product.Specifications
+	baseName := firstNonEmptyString(
+		jsonStringValue(override.CustomName),
+		product.BaseName,
+		jsonString(specs, "name", ""),
+	)
+	brand := jsonString(specs, "brand", "")
+	category := jsonString(specs, "category", "")
+	status := jsonString(specs, "status", "")
+	flavors := strings.Join(jsonStringSlice(specs, "flavors", nil), "、")
+	description := firstNonEmptyString(
+		jsonStringValue(override.CustomDescription),
+		jsonString(specs, "description", ""),
+		jsonString(specs, "longDescription", ""),
+	)
+	tenantTitle := jsonString(tenant.SEOConfig, "title", "")
+
+	return strings.TrimSpace(fmt.Sprintf(`
+你是电商命名编辑，请为指定租户生成商品“自訂商品名稱”。
+
+输出要求：
+1. 只返回 JSON，不要输出 markdown、说明文字或代码块。
+2. JSON 字段固定为：custom_name。
+3. custom_name 使用繁體中文，适合前台商品卡片与详情页标题。
+4. 名称要基于已有商品信息做优化，不要虚构不存在的规格、赠品、疗效、认证或承诺。
+5. 尽量不超过 60 个字。
+6. 如果原名称已经很适合，也可以只做轻微优化。
+
+租户信息：
+- 租户名称：%s
+- 主域名：%s
+- 租户 SEO 标题：%s
+
+商品信息：
+- 商品 ID：%d
+- SKU：%s
+- 当前名称：%s
+- 品牌：%s
+- 分类：%s
+- 状态：%s
+- 商品简介：%s
+- 口味：%s
+
+额外要求：
+%s
+`, tenant.Name, tenant.Domain, tenantTitle, product.ID, product.SKU, baseName, brand, category, status, description, flavors, firstNonEmptyString(instruction, "请输出最适合该租户站点风格的商品名称。")))
+}
+
+func generateOverrideDraftWithDeepSeek(cfg *config.Config, prompt string) (generatedOverrideDraftResponse, error) {
+	if strings.TrimSpace(cfg.DeepSeekAPIKey) == "" {
+		return generatedOverrideDraftResponse{}, errors.New("DEEPSEEK_API_KEY is not configured")
+	}
+
+	requestPayload := deepSeekChatCompletionRequest{
+		Model: cfg.DeepSeekModel,
+		Messages: []deepSeekChatCompletionMessage{
+			{
+				Role:    "system",
+				Content: "You are a precise ecommerce copywriter. Return valid JSON only.",
+			},
+			{
+				Role:    "user",
+				Content: prompt,
+			},
+		},
+		ResponseFormat: map[string]string{
+			"type": "json_object",
+		},
+		Temperature: 0.9,
+	}
+
+	body, err := json.Marshal(requestPayload)
+	if err != nil {
+		return generatedOverrideDraftResponse{}, err
+	}
+
+	endpoint := strings.TrimRight(cfg.DeepSeekBaseURL, "/") + "/chat/completions"
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return generatedOverrideDraftResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.DeepSeekAPIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 45 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return generatedOverrideDraftResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return generatedOverrideDraftResponse{}, err
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		var errorPayload deepSeekChatCompletionResponse
+		if json.Unmarshal(responseBody, &errorPayload) == nil && errorPayload.Error != nil && strings.TrimSpace(errorPayload.Error.Message) != "" {
+			return generatedOverrideDraftResponse{}, errors.New(errorPayload.Error.Message)
+		}
+		return generatedOverrideDraftResponse{}, fmt.Errorf("deepseek request failed with status %d", resp.StatusCode)
+	}
+
+	var completion deepSeekChatCompletionResponse
+	if err := json.Unmarshal(responseBody, &completion); err != nil {
+		return generatedOverrideDraftResponse{}, err
+	}
+	if len(completion.Choices) == 0 {
+		return generatedOverrideDraftResponse{}, errors.New("deepseek returned no choices")
+	}
+
+	content := strings.TrimSpace(completion.Choices[0].Message.Content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+
+	var result generatedOverrideDraftResponse
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return generatedOverrideDraftResponse{}, err
+	}
+
+	result.CustomName = limitRunes(result.CustomName, 60)
+	result.CustomDescription = limitRunes(result.CustomDescription, 260)
+	result.SEOTitle = limitRunes(result.SEOTitle, 70)
+	result.SEODescription = limitRunes(result.SEODescription, 180)
+
+	return result, nil
+}
+
+func generateOverrideNameWithDeepSeek(cfg *config.Config, prompt string) (string, error) {
+	if strings.TrimSpace(cfg.DeepSeekAPIKey) == "" {
+		return "", errors.New("DEEPSEEK_API_KEY is not configured")
+	}
+
+	requestPayload := deepSeekChatCompletionRequest{
+		Model: cfg.DeepSeekModel,
+		Messages: []deepSeekChatCompletionMessage{
+			{
+				Role:    "system",
+				Content: "You are a precise ecommerce naming editor. Return valid JSON only.",
+			},
+			{
+				Role:    "user",
+				Content: prompt,
+			},
+		},
+		ResponseFormat: map[string]string{
+			"type": "json_object",
+		},
+		Temperature: 0.8,
+	}
+
+	body, err := json.Marshal(requestPayload)
+	if err != nil {
+		return "", err
+	}
+
+	endpoint := strings.TrimRight(cfg.DeepSeekBaseURL, "/") + "/chat/completions"
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.DeepSeekAPIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 45 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		var errorPayload deepSeekChatCompletionResponse
+		if json.Unmarshal(responseBody, &errorPayload) == nil && errorPayload.Error != nil && strings.TrimSpace(errorPayload.Error.Message) != "" {
+			return "", errors.New(errorPayload.Error.Message)
+		}
+		return "", fmt.Errorf("deepseek request failed with status %d", resp.StatusCode)
+	}
+
+	var completion deepSeekChatCompletionResponse
+	if err := json.Unmarshal(responseBody, &completion); err != nil {
+		return "", err
+	}
+	if len(completion.Choices) == 0 {
+		return "", errors.New("deepseek returned no choices")
+	}
+
+	content := strings.TrimSpace(completion.Choices[0].Message.Content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+
+	var result struct {
+		CustomName string `json:"custom_name"`
+	}
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return "", err
+	}
+
+	return limitRunes(result.CustomName, 60), nil
 }
 
 func jsonProductVariants(source models.JSONMap, key string) []productVariantPayload {
@@ -845,6 +1595,21 @@ func jsonArrayToStrings(values models.JSONArray) []string {
 	return result
 }
 
+func buildVariantDisplayName(groups []productOptionGroupPayload, selections map[string]string) string {
+	parts := make([]string, 0, len(selections))
+	for _, group := range groups {
+		if value, ok := selections[group.Name]; ok && strings.TrimSpace(value) != "" {
+			parts = append(parts, group.Name+"："+strings.TrimSpace(value))
+		}
+	}
+	return strings.Join(parts, " / ")
+}
+
+func normalizedVariantLabel(value string) string {
+	replacer := strings.NewReplacer("：", ":", "／", "/", " ", "")
+	return strings.ToLower(strings.TrimSpace(replacer.Replace(value)))
+}
+
 func tenantToResponse(tenant models.Tenant) tenantResponse {
 	return tenantResponse{
 		ID:             tenant.ID,
@@ -930,6 +1695,12 @@ func productToResponse(product models.Product, override *models.TenantProductOve
 		specs = models.JSONMap{}
 	}
 
+	categoryID := jsonUint(specs, "categoryId")
+	categoryIDs := jsonUintSlice(specs, "categoryIds", nil)
+	if len(categoryIDs) == 0 && categoryID != nil && *categoryID > 0 {
+		categoryIDs = []uint{*categoryID}
+	}
+
 	response := productResponse{
 		ID:                product.ID,
 		SKU:               product.SKU,
@@ -942,7 +1713,8 @@ func productToResponse(product models.Product, override *models.TenantProductOve
 		Specifications:    specs,
 		IsActive:          product.IsActive,
 		Category:          jsonString(specs, "category", ""),
-		CategoryID:        jsonUint(specs, "categoryId"),
+		CategoryID:        categoryID,
+		CategoryIDs:       categoryIDs,
 		Brand:             jsonString(specs, "brand", ""),
 		BrandID:           jsonUint(specs, "brandId"),
 		PreviewImage:      jsonString(specs, "previewImage", ""),
@@ -950,6 +1722,7 @@ func productToResponse(product models.Product, override *models.TenantProductOve
 		Status:            jsonString(specs, "status", "草稿"),
 		Description:       jsonString(specs, "description", ""),
 		LongDescription:   jsonString(specs, "longDescription", ""),
+		SpecificationHTML: jsonString(specs, "specificationHtml", ""),
 		Badge:             jsonString(specs, "badge", ""),
 		Rating:            jsonFloat(specs, "rating", 4.5),
 		Reviews:           jsonInt(specs, "reviews", 0),
@@ -1042,6 +1815,23 @@ func productPayloadToModel(payload productPayload, existing *models.Product) mod
 		}
 	}
 
+	categoryIDs := sanitizeFeaturedCategoryIDs(payload.CategoryIDs)
+	if payload.CategoryID != nil && *payload.CategoryID > 0 {
+		hasPrimary := false
+		for _, id := range categoryIDs {
+			if id == *payload.CategoryID {
+				hasPrimary = true
+				break
+			}
+		}
+		if !hasPrimary {
+			categoryIDs = append(models.UIntArray{*payload.CategoryID}, categoryIDs...)
+		}
+	}
+	if len(categoryIDs) == 0 && payload.CategoryID != nil && *payload.CategoryID > 0 {
+		categoryIDs = models.UIntArray{*payload.CategoryID}
+	}
+
 	model.SKU = payload.SKU
 	model.BaseName = payload.BaseName
 	model.BasePrice = payload.BasePrice
@@ -1052,6 +1842,7 @@ func productPayloadToModel(payload productPayload, existing *models.Product) mod
 	model.Specifications = models.JSONMap{
 		"category":        payload.Category,
 		"categoryId":      payload.CategoryID,
+		"categoryIds":     categoryIDs,
 		"brand":           payload.Brand,
 		"brandId":         payload.BrandID,
 		"previewImage":    payload.PreviewImage,
@@ -1060,6 +1851,7 @@ func productPayloadToModel(payload productPayload, existing *models.Product) mod
 		"status":          payload.Status,
 		"description":     payload.Description,
 		"longDescription": payload.LongDescription,
+		"specificationHtml": payload.SpecificationHTML,
 		"badge":           payload.Badge,
 		"rating":          payload.Rating,
 		"reviews":         payload.Reviews,
@@ -1078,6 +1870,37 @@ func categoryToResponse(category models.Category) categoryResponse {
 		ParentID:  category.ParentID,
 		SortOrder: category.SortOrder,
 	}
+}
+
+func ensureDefaultSharedCategory(tx *gorm.DB) (models.Category, error) {
+	var category models.Category
+	if err := tx.
+		Where("tenant_id IS NULL").
+		Where("code = ? OR name IN ?", defaultUncategorizedCategoryCode, []string{defaultUncategorizedCategoryName, "未分类"}).
+		Order("id asc").
+		First(&category).Error; err == nil {
+		return category, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return models.Category{}, err
+	}
+
+	if err := tx.Exec(
+		`INSERT INTO categories (code, name, parent_id, seo_title, seo_description, created_at, updated_at, tenant_id, sort_order)
+		 VALUES (?, ?, NULL, ?, '', NOW(3), NOW(3), NULL, 0)`,
+		defaultUncategorizedCategoryCode,
+		defaultUncategorizedCategoryName,
+		defaultUncategorizedCategoryName,
+	).Error; err != nil {
+		return models.Category{}, err
+	}
+
+	if err := tx.
+		Where("tenant_id IS NULL AND code = ?", defaultUncategorizedCategoryCode).
+		First(&category).Error; err != nil {
+		return models.Category{}, err
+	}
+
+	return category, nil
 }
 
 func brandToResponse(brand models.Brand) brandResponse {
@@ -1120,9 +1943,13 @@ func requestBaseURL(c *gin.Context) string {
 	return scheme + "://" + host
 }
 
-func loadTenantOverrideMap(db *gorm.DB, tenantID uint) (map[uint]*models.TenantProductOverride, error) {
+func loadTenantOverrideMapForProducts(db *gorm.DB, tenantID uint, productIDs []uint) (map[uint]*models.TenantProductOverride, error) {
+	if len(productIDs) == 0 {
+		return map[uint]*models.TenantProductOverride{}, nil
+	}
+
 	var overrides []models.TenantProductOverride
-	if err := db.Where("tenant_id = ?", tenantID).Find(&overrides).Error; err != nil {
+	if err := db.Where("tenant_id = ? AND product_id IN ?", tenantID, productIDs).Find(&overrides).Error; err != nil {
 		return nil, err
 	}
 
@@ -1159,6 +1986,52 @@ func buildVisibleProductResponses(products []models.Product, overrideMap map[uin
 	return result
 }
 
+func loadSharedCategoryDescendantIDs(db *gorm.DB, cache *categoryDescendantCache, categoryID uint) (map[uint]struct{}, error) {
+	if cached, ok := cache.get(categoryID); ok {
+		return cached, nil
+	}
+
+	var categories []models.Category
+	if err := db.Where("tenant_id IS NULL").Find(&categories).Error; err != nil {
+		return nil, err
+	}
+
+	childrenByParent := make(map[uint][]uint)
+	for _, category := range categories {
+		if category.ParentID == nil {
+			continue
+		}
+		childrenByParent[*category.ParentID] = append(childrenByParent[*category.ParentID], category.ID)
+	}
+
+	result := map[uint]struct{}{categoryID: {}}
+	queue := []uint{categoryID}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, childID := range childrenByParent[current] {
+			if _, exists := result[childID]; exists {
+				continue
+			}
+			result[childID] = struct{}{}
+			queue = append(queue, childID)
+		}
+	}
+
+	cache.set(categoryID, result)
+	return result, nil
+}
+
+func productResponseCategoryIDs(product productResponse) []uint {
+	if len(product.CategoryIDs) > 0 {
+		return product.CategoryIDs
+	}
+	if product.CategoryID != nil && *product.CategoryID > 0 {
+		return []uint{*product.CategoryID}
+	}
+	return nil
+}
+
 func productLastModified(product models.Product, override *models.TenantProductOverride) string {
 	updatedAt := product.UpdatedAt
 	if override != nil && override.UpdatedAt.After(updatedAt) {
@@ -1168,6 +2041,30 @@ func productLastModified(product models.Product, override *models.TenantProductO
 		return ""
 	}
 	return updatedAt.Format("2006-01-02T15:04:05Z07:00")
+}
+
+func loadOrderProductNameMap(db *gorm.DB, items []models.OrderItem) (map[uint]string, error) {
+	productIDs := make([]uint, 0, len(items))
+	for _, item := range items {
+		if item.ProductID > 0 {
+			productIDs = append(productIDs, item.ProductID)
+		}
+	}
+
+	productNameByID := make(map[uint]string, len(productIDs))
+	if len(productIDs) == 0 {
+		return productNameByID, nil
+	}
+
+	var products []models.Product
+	if err := db.Where("id IN ?", productIDs).Find(&products).Error; err != nil {
+		return nil, err
+	}
+	for _, product := range products {
+		productNameByID[product.ID] = firstNonEmptyString(product.BaseName, product.SKU)
+	}
+
+	return productNameByID, nil
 }
 
 func validateTenantDomains(db *gorm.DB, tenantID uint, primaryDomain string, boundDomains []string) error {
@@ -1202,12 +2099,13 @@ func validateTenantDomains(db *gorm.DB, tenantID uint, primaryDomain string, bou
 	return nil
 }
 
-func orderToResponse(order models.Order, items []models.OrderItem) orderResponse {
+func orderToResponse(order models.Order, items []models.OrderItem, productNameByID map[uint]string) orderResponse {
 	result := make([]orderItemResponse, 0, len(items))
 	for _, item := range items {
 		result = append(result, orderItemResponse{
 			ID:          item.ID,
 			ProductID:   item.ProductID,
+			Name:        firstNonEmptyString(productNameByID[item.ProductID], fmt.Sprintf("商品 #%d", item.ProductID)),
 			VariantName: item.VariantName,
 			VariantSKU:  item.VariantSKU,
 			Quantity:    item.Quantity,
@@ -1305,7 +2203,7 @@ func GetTenantHostCheckHandler() gin.HandlerFunc {
 
 // ===== 商品处理器 =====
 
-func GetProductsHandler(db *gorm.DB) gin.HandlerFunc {
+func GetProductsHandler(db *gorm.DB, cache *productListCache, categoryCache *categoryDescendantCache) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		pageInt, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 		limitInt, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -1315,38 +2213,120 @@ func GetProductsHandler(db *gorm.DB) gin.HandlerFunc {
 		if limitInt < 1 {
 			limitInt = 20
 		}
+		if limitInt > 100 {
+			limitInt = 100
+		}
 		offset := (pageInt - 1) * limitInt
 		tenantID := c.GetUint("tenant_id")
+		keyword := strings.TrimSpace(c.Query("keyword"))
+		brandFilter := strings.TrimSpace(c.Query("brand"))
+		sortBy := strings.TrimSpace(c.DefaultQuery("sort", "default"))
+		categoryQuery := strings.TrimSpace(c.Query("category"))
+		categoryIDInt, _ := strconv.ParseUint(categoryQuery, 10, 64)
+		cacheKey := buildProductListCacheKey(tenantID, pageInt, limitInt, keyword, categoryQuery, brandFilter, sortBy)
+		if cached, ok := cache.get(cacheKey); ok {
+			c.JSON(http.StatusOK, cached)
+			return
+		}
+
+		query := db.Model(&models.Product{}).
+			Joins("LEFT JOIN tenant_product_overrides tpo ON tpo.product_id = products.id AND tpo.tenant_id = ?", tenantID).
+			Where("is_active = ?", true).
+			Where("JSON_UNQUOTE(JSON_EXTRACT(specifications, '$.status')) = ?", "上架中").
+			Where("(tpo.id IS NULL OR tpo.is_visible = ?)", true)
+
+		if keyword != "" {
+			likeKeyword := "%" + strings.ToLower(keyword) + "%"
+			query = query.Where(`
+				LOWER(COALESCE(tpo.custom_name, base_name)) LIKE ? OR
+				LOWER(sku) LIKE ? OR
+				LOWER(slug) LIKE ? OR
+				LOWER(COALESCE(tpo.custom_description, JSON_UNQUOTE(JSON_EXTRACT(specifications, '$.description')))) LIKE ? OR
+				LOWER(JSON_UNQUOTE(JSON_EXTRACT(specifications, '$.category'))) LIKE ? OR
+				LOWER(JSON_UNQUOTE(JSON_EXTRACT(specifications, '$.brand'))) LIKE ?
+			`, likeKeyword, likeKeyword, likeKeyword, likeKeyword, likeKeyword, likeKeyword)
+		}
+
+		if brandFilter != "" {
+			query = query.Where("LOWER(JSON_UNQUOTE(JSON_EXTRACT(specifications, '$.brand'))) = ?", strings.ToLower(brandFilter))
+		}
+
+		if categoryIDInt > 0 {
+			categoryFilterIDs, err := loadSharedCategoryDescendantIDs(db, categoryCache, uint(categoryIDInt))
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load category tree"})
+				return
+			}
+
+			categoryIDs := make([]uint, 0, len(categoryFilterIDs))
+			for id := range categoryFilterIDs {
+				categoryIDs = append(categoryIDs, id)
+			}
+			sort.Slice(categoryIDs, func(i, j int) bool { return categoryIDs[i] < categoryIDs[j] })
+
+			jsonConditions := make([]string, 0, len(categoryIDs))
+			args := make([]interface{}, 0, len(categoryIDs)+1)
+			if len(categoryIDs) > 0 {
+				args = append(args, categoryIDs)
+			}
+			for _, id := range categoryIDs {
+				jsonConditions = append(jsonConditions, "JSON_CONTAINS(JSON_EXTRACT(specifications, '$.categoryIds'), CAST(? AS JSON))")
+				args = append(args, strconv.FormatUint(uint64(id), 10))
+			}
+
+			if len(jsonConditions) > 0 {
+				query = query.Where(
+					"(CAST(JSON_UNQUOTE(JSON_EXTRACT(specifications, '$.categoryId')) AS UNSIGNED) IN ? OR "+strings.Join(jsonConditions, " OR ")+")",
+					args...,
+				)
+			} else {
+				query = query.Where("CAST(JSON_UNQUOTE(JSON_EXTRACT(specifications, '$.categoryId')) AS UNSIGNED) = ?", categoryIDInt)
+			}
+		}
+
+		var total int64
+		if err := query.Count(&total).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count products"})
+			return
+		}
+
+		sortOrder := "id desc"
+		switch sortBy {
+		case "price-asc":
+			sortOrder = "COALESCE(tpo.custom_price, base_price) asc, id desc"
+		case "price-desc":
+			sortOrder = "COALESCE(tpo.custom_price, base_price) desc, id desc"
+		case "rating":
+			sortOrder = "CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(specifications, '$.rating')), '0') AS DECIMAL(10,2)) desc, id desc"
+		}
 
 		var products []models.Product
-		if err := db.Where("is_active = ?", true).Order("id desc").Find(&products).Error; err != nil {
+		if err := query.Order(sortOrder).Offset(offset).Limit(limitInt).Find(&products).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch products"})
 			return
 		}
 
-		overrideMap, err := loadTenantOverrideMap(db, tenantID)
+		productIDs := make([]uint, 0, len(products))
+		for _, product := range products {
+			productIDs = append(productIDs, product.ID)
+		}
+
+		overrideMap, err := loadTenantOverrideMapForProducts(db, tenantID, productIDs)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tenant overrides"})
 			return
 		}
 
-		visibleProducts := buildVisibleProductResponses(products, overrideMap)
-		total := len(visibleProducts)
-		if offset > total {
-			offset = total
+		result := buildVisibleProductResponses(products, overrideMap)
+		response := productListResponse{
+			Data:  result,
+			Total: total,
+			Page:  pageInt,
+			Limit: limitInt,
 		}
-		end := offset + limitInt
-		if end > total {
-			end = total
-		}
-		result := visibleProducts[offset:end]
+		cache.set(cacheKey, response)
 
-		c.JSON(http.StatusOK, gin.H{
-			"data":  result,
-			"total": total,
-			"page":  pageInt,
-			"limit": limitInt,
-		})
+		c.JSON(http.StatusOK, response)
 	}
 }
 
@@ -1444,6 +2424,7 @@ func SetProductOverridesHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update override"})
 			return
 		}
+		invalidateCatalogCaches()
 
 		c.JSON(http.StatusOK, override)
 	}
@@ -1506,6 +2487,7 @@ func CreateCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create category"})
 			return
 		}
+		invalidateCategoryCaches()
 
 		c.JSON(http.StatusCreated, categoryToResponse(category))
 	}
@@ -1543,6 +2525,7 @@ func UpdateCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update category"})
 			return
 		}
+		invalidateCategoryCaches()
 
 		c.JSON(http.StatusOK, categoryToResponse(category))
 	}
@@ -1560,6 +2543,12 @@ func DeleteCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
+		var category models.Category
+		if err := db.Where("tenant_id IS NULL AND id = ?", categoryID).First(&category).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Category not found"})
+			return
+		}
+
 		var childCount int64
 		if err := db.Model(&models.Category{}).Where("tenant_id IS NULL AND parent_id = ?", categoryID).Count(&childCount).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to inspect category tree"})
@@ -1570,12 +2559,118 @@ func DeleteCategoryHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		if err := db.Where("tenant_id IS NULL AND id = ?", categoryID).Delete(&models.Category{}).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete category"})
+		defaultCategory, err := ensureDefaultSharedCategory(db)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to ensure default uncategorized category"})
+			return
+		}
+		if category.ID == defaultCategory.ID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Default uncategorized category cannot be deleted"})
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"success": true})
+		var reassignedProductCount int64
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			defaultCategory, err := ensureDefaultSharedCategory(tx)
+			if err != nil {
+				return err
+			}
+
+			var categories []models.Category
+			if err := tx.Where("tenant_id IS NULL").Find(&categories).Error; err != nil {
+				return err
+			}
+			categoryNameByID := make(map[uint]string, len(categories))
+			for _, item := range categories {
+				categoryNameByID[item.ID] = item.Name
+			}
+
+			var products []models.Product
+			if err := tx.Find(&products).Error; err != nil {
+				return err
+			}
+
+			for _, product := range products {
+				specs := product.Specifications
+				if specs == nil {
+					specs = models.JSONMap{}
+				}
+
+				changed := false
+				currentCategoryID := jsonUint(specs, "categoryId")
+				categoryIDs := jsonUintSlice(specs, "categoryIds", nil)
+
+				filteredCategoryIDs := make([]uint, 0, len(categoryIDs))
+				for _, id := range categoryIDs {
+					if id == categoryID {
+						changed = true
+						continue
+					}
+					filteredCategoryIDs = append(filteredCategoryIDs, id)
+				}
+
+				if currentCategoryID != nil && *currentCategoryID == categoryID {
+					changed = true
+					if len(filteredCategoryIDs) > 0 {
+						specs["categoryId"] = filteredCategoryIDs[0]
+						if name, exists := categoryNameByID[filteredCategoryIDs[0]]; exists {
+							specs["category"] = name
+						}
+					} else {
+						specs["categoryId"] = defaultCategory.ID
+						specs["category"] = defaultCategory.Name
+						filteredCategoryIDs = append(filteredCategoryIDs, defaultCategory.ID)
+					}
+				}
+
+				if len(filteredCategoryIDs) == 0 && currentCategoryID == nil {
+					continue
+				}
+
+				if !changed {
+					continue
+				}
+
+				if nextCategoryPtr := jsonUint(specs, "categoryId"); nextCategoryPtr != nil {
+					if *nextCategoryPtr == defaultCategory.ID {
+						specs["category"] = defaultCategory.Name
+					} else if name, exists := categoryNameByID[*nextCategoryPtr]; exists {
+						specs["category"] = name
+					}
+				}
+
+				specs["categoryIds"] = models.UIntArray(filteredCategoryIDs)
+				reassignedProductCount++
+
+				if err := tx.Model(&models.Product{}).
+					Where("id = ?", product.ID).
+					Updates(map[string]interface{}{
+						"specifications": specs,
+					}).Error; err != nil {
+					return err
+				}
+			}
+
+			if err := tx.Where("tenant_id IS NULL AND id = ?", categoryID).Delete(&models.Category{}).Error; err != nil {
+				return err
+			}
+
+			return nil
+		}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":  "Failed to delete category",
+				"detail": err.Error(),
+			})
+			return
+		}
+		invalidateCategoryCaches()
+
+		c.JSON(http.StatusOK, gin.H{
+			"success":                  true,
+			"reassigned_product_count": reassignedProductCount,
+			"default_category_id":      defaultCategory.ID,
+			"default_category_name":    defaultCategory.Name,
+		})
 	}
 }
 
@@ -1789,6 +2884,7 @@ func CreateOrderHandler(db *gorm.DB) gin.HandlerFunc {
 			price := product.BasePrice
 			productSpecs := product.Specifications
 			skuVariants := jsonProductSkuVariants(productSpecs, "skuVariants")
+			optionGroups := jsonProductOptionGroups(productSpecs, "optionGroups")
 			selectedVariantName := strings.TrimSpace(item.VariantName)
 			selectedVariantSKU := strings.TrimSpace(item.VariantSKU)
 			if len(skuVariants) > 0 {
@@ -1798,21 +2894,23 @@ func CreateOrderHandler(db *gorm.DB) gin.HandlerFunc {
 				}
 				matched := false
 				for _, variant := range skuVariants {
-					if variant.SKU != selectedVariantSKU {
+					resolvedVariantName := buildVariantDisplayName(optionGroups, variant.Selections)
+					matchesBySKU := variant.SKU == selectedVariantSKU
+					matchesByName := normalizedVariantLabel(resolvedVariantName) != "" &&
+						normalizedVariantLabel(resolvedVariantName) == normalizedVariantLabel(selectedVariantName)
+					if !matchesBySKU && !matchesByName {
 						continue
 					}
-					parts := make([]string, 0, len(variant.Selections))
-					for _, group := range jsonProductOptionGroups(productSpecs, "optionGroups") {
-						if value, ok := variant.Selections[group.Name]; ok {
-							parts = append(parts, group.Name+"："+value)
-						}
-					}
-					selectedVariantName = strings.Join(parts, " / ")
+					selectedVariantName = resolvedVariantName
 					selectedVariantSKU = variant.SKU
 					if variant.Price != nil {
 						price = *variant.Price
 					}
-					if variant.Stock != nil && item.Quantity > *variant.Stock {
+					availableStock := product.BaseStockQuantity
+					if variant.Stock != nil {
+						availableStock = *variant.Stock
+					}
+					if item.Quantity > availableStock {
 						c.JSON(http.StatusBadRequest, gin.H{"error": "Selected variant stock is insufficient"})
 						return
 					}
@@ -1856,7 +2954,7 @@ func CreateOrderHandler(db *gorm.DB) gin.HandlerFunc {
 		order := models.Order{
 			TenantID:         tenantID,
 			TotalAmount:      totalAmount,
-			Status:           "pending",
+			Status:           "已下单",
 			LineID:           payload.LineID,
 			Phone:            payload.Phone,
 			ConvenienceStore: payload.ConvenienceStore,
@@ -1865,7 +2963,7 @@ func CreateOrderHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		if err := db.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Create(&order).Error; err != nil {
+			if err := tx.Omit("UserID").Create(&order).Error; err != nil {
 				return err
 			}
 			for index := range orderItems {
@@ -1880,7 +2978,13 @@ func CreateOrderHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusCreated, orderToResponse(order, orderItems))
+		productNameByID, err := loadOrderProductNameMap(db, orderItems)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve order product names"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, orderToResponse(order, orderItems, productNameByID))
 	}
 }
 
@@ -1905,7 +3009,12 @@ func GetOrdersHandler(db *gorm.DB) gin.HandlerFunc {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch order items"})
 				return
 			}
-			result = append(result, orderToResponse(order, items))
+			productNameByID, err := loadOrderProductNameMap(db, items)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve order product names"})
+				return
+			}
+			result = append(result, orderToResponse(order, items, productNameByID))
 		}
 
 		c.JSON(http.StatusOK, result)
@@ -1933,7 +3042,360 @@ func GetOrderDetailHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, orderToResponse(order, items))
+		productNameByID, err := loadOrderProductNameMap(db, items)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve order product names"})
+			return
+		}
+
+		c.JSON(http.StatusOK, orderToResponse(order, items, productNameByID))
+	}
+}
+
+func GetAdminOrdersHandler(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var orders []models.Order
+		if err := db.Order("id desc").Find(&orders).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch orders"})
+			return
+		}
+
+		result := make([]orderResponse, 0, len(orders))
+		for _, order := range orders {
+			var items []models.OrderItem
+			if err := db.Where("order_id = ?", order.ID).Find(&items).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch order items"})
+				return
+			}
+			productNameByID, err := loadOrderProductNameMap(db, items)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve order product names"})
+				return
+			}
+			result = append(result, orderToResponse(order, items, productNameByID))
+		}
+
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+func GetDomainsHandler(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		search := strings.TrimSpace(c.Query("search"))
+		query := db.Model(&models.Domain{})
+		if search != "" {
+			like := "%" + search + "%"
+			query = query.Where("domain_name LIKE ? OR registrar LIKE ?", like, like)
+		}
+
+		var domains []models.Domain
+		if err := query.Order("id desc").Find(&domains).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch domains"})
+			return
+		}
+
+		result := make([]domainResponse, 0, len(domains))
+		for _, domain := range domains {
+			result = append(result, domainToResponse(domain))
+		}
+
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+func CreateDomainHandler(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var payload domainPayload
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid domain payload"})
+			return
+		}
+
+		domainName := strings.TrimSpace(strings.ToLower(payload.DomainName))
+		if domainName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Domain name is required"})
+			return
+		}
+
+		var existingCount int64
+		if err := db.Model(&models.Domain{}).Where("domain_name = ?", domainName).Count(&existingCount).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate domain uniqueness"})
+			return
+		}
+		if existingCount > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Domain already exists"})
+			return
+		}
+
+		expireDate, err := parseOptionalDate(payload.ExpireDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid expire date format, expected YYYY-MM-DD"})
+			return
+		}
+
+		domain := models.Domain{
+			DomainName: domainName,
+			Registrar:  firstNonEmptyString(payload.Registrar, "manual"),
+			ExpireDate: expireDate,
+			DNSRecords: models.JSONArray{},
+		}
+
+		if err := db.Create(&domain).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create domain"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, domainToResponse(domain))
+	}
+}
+
+func UpdateDomainHandler(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		domainID, err := getUintParam(c, "id")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid domain id"})
+			return
+		}
+
+		var payload domainPayload
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid domain payload"})
+			return
+		}
+
+		var domain models.Domain
+		if err := db.First(&domain, domainID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Domain not found"})
+			return
+		}
+
+		domainName := strings.TrimSpace(strings.ToLower(payload.DomainName))
+		if domainName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Domain name is required"})
+			return
+		}
+
+		var existingCount int64
+		if err := db.Model(&models.Domain{}).
+			Where("domain_name = ? AND id <> ?", domainName, domainID).
+			Count(&existingCount).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate domain uniqueness"})
+			return
+		}
+		if existingCount > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Domain already exists"})
+			return
+		}
+
+		expireDate, err := parseOptionalDate(payload.ExpireDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid expire date format, expected YYYY-MM-DD"})
+			return
+		}
+
+		domain.DomainName = domainName
+		domain.Registrar = firstNonEmptyString(payload.Registrar, "manual")
+		domain.ExpireDate = expireDate
+
+		if err := db.Save(&domain).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update domain"})
+			return
+		}
+
+		c.JSON(http.StatusOK, domainToResponse(domain))
+	}
+}
+
+func DeleteDomainHandler(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		domainID, err := getUintParam(c, "id")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid domain id"})
+			return
+		}
+
+		if err := db.Delete(&models.Domain{}, domainID).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete domain"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	}
+}
+
+func SyncDomainsFromGoDaddyHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var payload domainSyncPayload
+		_ = c.ShouldBindJSON(&payload)
+
+		var remoteDomains []struct {
+			Domain  string `json:"domain"`
+			Expires string `json:"expires"`
+		}
+		var err error
+		remoteDomains, err = godaddyRequest[[]struct {
+			Domain  string `json:"domain"`
+			Expires string `json:"expires"`
+		}](cfg, http.MethodGet, "/v1/domains", nil)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+
+		created := 0
+		updated := 0
+		for _, item := range remoteDomains {
+			domainName := strings.TrimSpace(strings.ToLower(item.Domain))
+			if domainName == "" {
+				continue
+			}
+
+			var domain models.Domain
+			findErr := db.Where("domain_name = ?", domainName).First(&domain).Error
+			if findErr != nil && !errors.Is(findErr, gorm.ErrRecordNotFound) {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sync domains"})
+				return
+			}
+
+			var expireDate *time.Time
+			if strings.TrimSpace(item.Expires) != "" {
+				parsed, parseErr := time.Parse(time.RFC3339, item.Expires)
+				if parseErr == nil {
+					expireDate = &parsed
+				}
+			}
+
+			if errors.Is(findErr, gorm.ErrRecordNotFound) {
+				domain = models.Domain{
+					DomainName: domainName,
+					Registrar:  "godaddy",
+					ExpireDate: expireDate,
+					DNSRecords: models.JSONArray{},
+				}
+				if err := db.Create(&domain).Error; err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create synced domain"})
+					return
+				}
+				created++
+				continue
+			}
+
+			domain.Registrar = "godaddy"
+			domain.ExpireDate = expireDate
+			if err := db.Save(&domain).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update synced domain"})
+				return
+			}
+			updated++
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"created": created,
+			"updated": updated,
+			"total":   created + updated,
+		})
+	}
+}
+
+func GetDomainDNSRecordsHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		domainID, err := getUintParam(c, "id")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid domain id"})
+			return
+		}
+
+		var domain models.Domain
+		if err := db.First(&domain, domainID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Domain not found"})
+			return
+		}
+
+		records, err := godaddyRequest[[]dnsRecordPayload](cfg, http.MethodGet, "/v1/domains/"+domain.DomainName+"/records", nil)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+
+		domain.DNSRecords = dnsRecordsToJSONArray(records)
+		_ = db.Save(&domain).Error
+		c.JSON(http.StatusOK, records)
+	}
+}
+
+func UpdateDomainDNSRecordsHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		domainID, err := getUintParam(c, "id")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid domain id"})
+			return
+		}
+
+		var records []dnsRecordPayload
+		if err := c.ShouldBindJSON(&records); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid DNS records payload"})
+			return
+		}
+
+		var domain models.Domain
+		if err := db.First(&domain, domainID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Domain not found"})
+			return
+		}
+
+		payload, err := json.Marshal(records)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode DNS records"})
+			return
+		}
+
+		if _, err := godaddyRequest[[]map[string]interface{}](cfg, http.MethodPut, "/v1/domains/"+domain.DomainName+"/records", bytes.NewReader(payload)); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+
+		domain.DNSRecords = dnsRecordsToJSONArray(records)
+		if err := db.Save(&domain).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist DNS records"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	}
+}
+
+func CheckDomainDNSStatusHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var domains []models.Domain
+		if err := db.Find(&domains).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch domains"})
+			return
+		}
+
+		checked := 0
+		blocked := 0
+		for _, domain := range domains {
+			ip, err := resolveDomainIP(cfg.DNSCheckServer, domain.DomainName)
+			now := time.Now()
+			if err == nil && ip != "" {
+				domain.LastCheckIP = &ip
+				domain.IsBlocked = ip == cfg.DNSBlockedIP
+				if domain.IsBlocked {
+					blocked++
+				}
+			}
+			domain.LastCheckedAt = &now
+			if saveErr := db.Save(&domain).Error; saveErr == nil {
+				checked++
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"checked": checked,
+			"blocked": blocked,
+			"total":   len(domains),
+		})
 	}
 }
 
@@ -2066,9 +3528,12 @@ func UpdateAdminPlatformConfigHandler(db *gorm.DB) gin.HandlerFunc {
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load platform config"})
 			return
-		}
+			}
 
 		config.LineContactURL = strings.TrimSpace(payload.LineContactURL)
+		config.FaqHTML = strings.TrimSpace(payload.FaqHTML)
+		config.ShippingFee = payload.ShippingFee
+		config.FreeShippingThreshold = payload.FreeShippingThreshold
 		config.FeaturedCategoryIDs = sanitizeFeaturedCategoryIDs(payload.FeaturedCategoryIDs)
 		config.FeaturedBrandIDs = sanitizeFeaturedCategoryIDs(payload.FeaturedBrandIDs)
 		if err := db.Save(&config).Error; err != nil {
@@ -2141,6 +3606,7 @@ func CreateProductAdminHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create product"})
 			return
 		}
+		invalidateCatalogCaches()
 
 		c.JSON(http.StatusCreated, productToResponse(product, nil))
 	}
@@ -2177,6 +3643,7 @@ func UpdateProductAdminHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update product"})
 			return
 		}
+		invalidateCatalogCaches()
 
 		c.JSON(http.StatusOK, productToResponse(product, nil))
 	}
@@ -2239,6 +3706,7 @@ func BulkUpdateProductsAdminHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bulk update products"})
 			return
 		}
+		invalidateCatalogCaches()
 
 		if err := db.Where("id IN ?", payload.ProductIDs).Order("id desc").Find(&products).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load updated products"})
@@ -2270,6 +3738,7 @@ func DeleteProductAdminHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete product"})
 			return
 		}
+		invalidateCatalogCaches()
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}
@@ -2371,7 +3840,178 @@ func UpdateProductOverrideHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update product override"})
 			return
 		}
+		invalidateCatalogCaches()
 
 		c.JSON(http.StatusOK, override)
+	}
+}
+
+func GenerateProductOverrideDraftHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		productID, err := getUintParam(c, "id")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid product id"})
+			return
+		}
+
+		tenantID, err := getUintParam(c, "tenant_id")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
+			return
+		}
+
+		if strings.TrimSpace(cfg.DeepSeekAPIKey) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "DeepSeek API key is not configured"})
+			return
+		}
+
+		var tenant models.Tenant
+		if err := db.First(&tenant, tenantID).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Tenant not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load tenant"})
+			return
+		}
+
+		var product models.Product
+		if err := db.First(&product, productID).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load product"})
+			return
+		}
+
+		var payload generateOverrideDraftPayload
+		if err := c.ShouldBindJSON(&payload); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid generate payload"})
+			return
+		}
+
+		var override models.TenantProductOverride
+		err = db.Where("tenant_id = ? AND product_id = ?", tenantID, productID).First(&override).Error
+		if err != nil && err != gorm.ErrRecordNotFound {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load override"})
+			return
+		}
+
+		prompt := buildOverrideGenerationPrompt(product, tenant, override, payload.Instruction)
+		result, err := generateOverrideDraftWithDeepSeek(cfg, prompt)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to generate override draft: " + err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+func BulkGenerateProductOverrideNamesHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if strings.TrimSpace(cfg.DeepSeekAPIKey) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "DeepSeek API key is not configured"})
+			return
+		}
+
+		var payload bulkGenerateOverrideNamesPayload
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid bulk generate payload"})
+			return
+		}
+
+		if payload.TenantID == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tenant id is required"})
+			return
+		}
+		if len(payload.ProductIDs) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Product ids are required"})
+			return
+		}
+
+		var tenant models.Tenant
+		if err := db.First(&tenant, payload.TenantID).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Tenant not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load tenant"})
+			return
+		}
+
+		var products []models.Product
+		if err := db.Where("id IN ?", payload.ProductIDs).Find(&products).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load products"})
+			return
+		}
+		if len(products) == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Products not found"})
+			return
+		}
+
+		productByID := make(map[uint]models.Product, len(products))
+		for _, product := range products {
+			productByID[product.ID] = product
+		}
+
+		var overrides []models.TenantProductOverride
+		if err := db.Where("tenant_id = ? AND product_id IN ?", payload.TenantID, payload.ProductIDs).Find(&overrides).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load overrides"})
+			return
+		}
+
+		overrideByProductID := make(map[uint]models.TenantProductOverride, len(overrides))
+		for _, override := range overrides {
+			overrideByProductID[override.ProductID] = override
+		}
+
+		results := make([]generatedOverrideNameResponse, 0, len(payload.ProductIDs))
+
+		err := db.Transaction(func(tx *gorm.DB) error {
+			for _, productID := range payload.ProductIDs {
+				product, exists := productByID[productID]
+				if !exists {
+					continue
+				}
+
+				override := overrideByProductID[productID]
+				prompt := buildOverrideNameGenerationPrompt(product, tenant, override, payload.Instruction)
+				customName, err := generateOverrideNameWithDeepSeek(cfg, prompt)
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(customName) == "" {
+					continue
+				}
+
+				override.TenantID = payload.TenantID
+				override.ProductID = productID
+				override.CustomName = stringPtr(customName)
+				if override.ID == 0 {
+					override.IsVisible = true
+					if err := tx.Create(&override).Error; err != nil {
+						return err
+					}
+				} else if err := tx.Save(&override).Error; err != nil {
+					return err
+				}
+
+				results = append(results, generatedOverrideNameResponse{
+					ProductID:  productID,
+					TenantID:   payload.TenantID,
+					CustomName: customName,
+				})
+			}
+			return nil
+		})
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to bulk generate custom names: " + err.Error()})
+			return
+		}
+
+		invalidateCatalogCaches()
+		c.JSON(http.StatusOK, results)
 	}
 }

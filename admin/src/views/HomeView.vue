@@ -4,13 +4,13 @@ import { useAdminStore } from '@/stores/admin'
 
 const store = useAdminStore()
 
-const paidOrders = computed(() => store.orders.filter((order) => order.status === '已付款').length)
+const placedOrders = computed(() => store.orders.filter((order) => order.status === '已下单').length)
 const lowStockProducts = computed(() =>
   store.products.filter((product) => product.baseStockQuantity <= 20),
 )
 const grossRevenue = computed(() =>
   store.orders.reduce((sum, order) => {
-    if (order.status === '已付款' || order.status === '已出貨' || order.status === '已完成') {
+    if (order.status === '已下单' || order.status === '已出貨' || order.status === '已完成') {
       return sum + order.totalAmount
     }
     return sum
@@ -45,14 +45,14 @@ const grossRevenue = computed(() =>
         <p>可見的租戶客製資料組合</p>
       </article>
       <article class="panel stat-card">
-        <span>已付款訂單</span>
-        <strong>{{ paidOrders }}</strong>
-        <p>目前付款已確認，可進入出貨流程</p>
+        <span>已下单订单</span>
+        <strong>{{ placedOrders }}</strong>
+        <p>用户刚提交完成，等待后续确认与出货处理</p>
       </article>
       <article class="panel stat-card">
         <span>營收快照</span>
         <strong>NT$ {{ grossRevenue.toLocaleString() }}</strong>
-        <p>已付款、已出貨與已完成訂單加總</p>
+        <p>已下单、已出貨與已完成訂單加總</p>
       </article>
     </div>
 

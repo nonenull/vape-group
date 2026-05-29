@@ -73,7 +73,9 @@ export function slugifyProductName(value: string) {
 }
 
 export function buildProductPath(product: { id: number | string, name: string, slug?: string }) {
-  const slug = product.slug?.trim() || slugifyProductName(product.name)
+  const rawSlug = product.slug?.trim() || ''
+  const hasPercentEncodedSegment = /%[0-9a-f]{2}/i.test(rawSlug)
+  const slug = rawSlug && !hasPercentEncodedSegment ? rawSlug : slugifyProductName(product.name)
   return `/products/${product.id}-${slug}`
 }
 

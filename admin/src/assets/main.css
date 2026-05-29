@@ -3,3 +3,250 @@
 #app {
   min-height: 100vh;
 }
+
+.admin-page {
+  display: grid;
+  gap: 1rem;
+}
+
+.admin-page-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.admin-page-label {
+  color: var(--wp-blue);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.75rem;
+}
+
+.admin-page-subcopy {
+  color: var(--wp-text-muted);
+  max-width: 72ch;
+}
+
+.admin-panel,
+.admin-modal-card {
+  background: #fff;
+  border: 1px solid var(--wp-border);
+  border-radius: 0.5rem;
+  box-shadow: var(--wp-shadow);
+  padding: 1rem 1.25rem;
+}
+
+.admin-card-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.admin-card-heading.compact {
+  margin-bottom: 0.75rem;
+}
+
+.admin-card-heading small {
+  color: var(--wp-text-muted);
+}
+
+.admin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 1rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--wp-border);
+  border-radius: 0.65rem;
+  background: var(--wp-surface-soft);
+}
+
+.admin-table-wrap {
+  overflow-x: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 0.85rem 0.75rem;
+  border-bottom: 1px solid var(--wp-border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.admin-table th {
+  color: var(--wp-text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: #f6f7f7;
+}
+
+.admin-table tr.selected td {
+  background: #f0f6fc;
+}
+
+.admin-checkbox-col {
+  width: 44px;
+}
+
+.admin-checkbox-col input {
+  width: auto;
+  min-height: auto;
+}
+
+.admin-action-col {
+  width: 220px;
+}
+
+.admin-row-actions,
+.admin-action-group,
+.admin-modal-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.admin-row-actions {
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.admin-form-grid {
+  display: grid;
+  gap: 0.875rem;
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.admin-form-grid label {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.admin-form-grid label span {
+  font-weight: 600;
+}
+
+.admin-full {
+  grid-column: 1 / -1;
+}
+
+.admin-input,
+.admin-textarea {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--wp-border-strong);
+  border-radius: 0.375rem;
+  background: #fff;
+}
+
+.admin-textarea {
+  resize: vertical;
+}
+
+.admin-input:disabled,
+.admin-textarea:disabled {
+  background: #f6f7f7;
+  color: #50575e;
+  cursor: not-allowed;
+}
+
+.admin-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.admin-primary,
+.admin-danger,
+.admin-secondary {
+  min-height: 2.5rem;
+  padding: 0.65rem 1rem;
+  border-radius: 0.375rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.admin-small-button,
+.admin-small-inline {
+  min-height: 2rem;
+  padding: 0.4rem 0.75rem;
+}
+
+.admin-primary {
+  background: var(--wp-blue);
+  color: #fff;
+  border-color: var(--wp-blue);
+}
+
+.admin-secondary {
+  background: #fff;
+  color: var(--wp-blue);
+  border-color: rgba(34, 113, 177, 0.24);
+}
+
+.admin-danger {
+  background: #fff;
+  color: var(--wp-red);
+  border-color: rgba(214, 54, 56, 0.3);
+}
+
+.admin-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  overflow-y: auto;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+.admin-modal-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100vh - 3rem);
+  overflow: hidden;
+}
+
+.admin-modal-heading {
+  margin-bottom: 0;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--wp-border);
+}
+
+.admin-modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding-top: 0.85rem;
+}
+
+@media (max-width: 900px) {
+  .admin-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 780px) {
+  .admin-page-heading,
+  .admin-actions,
+  .admin-modal-actions,
+  .admin-action-group,
+  .admin-row-actions {
+    flex-direction: column;
+  }
+
+  .admin-modal-overlay {
+    padding: 0.75rem;
+  }
+}

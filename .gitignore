@@ -42,3 +42,5 @@ out/
 # 其他
 .turbo
 test*
+.output
+bak.sql*

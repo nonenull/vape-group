@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { Delete, Edit, Plus, Search, View } from '@element-plus/icons-vue'
+import type { CheckboxValueType } from 'element-plus'
 import { useAdminStore } from '@/stores/admin'
 import { adminAPI, resolveAssetURL } from '@/api/admin'
 import type {
+  BulkGeneratedOverrideNameRecord,
   ProductOptionGroupRecord,
   ProductOverrideRecord,
   ProductRecord,
@@ -12,9 +15,22 @@ import type {
 
 const store = useAdminStore()
 
+const slugUnsafeChars = /[^a-z0-9]+/g
+
+function slugifyProductName(value: string) {
+  const source = value.trim().toLowerCase()
+  if (!source) {
+    return 'product'
+  }
+  return source
+    .replace(slugUnsafeChars, '-')
+    .replace(/^-+|-+$/g, '') || 'product'
+}
+
 function cloneProduct(product: ProductRecord): ProductRecord {
   return {
     ...product,
+    categoryIds: [...(product.categoryIds ?? (product.categoryId != null ? [product.categoryId] : []))],
     gallery: [...product.gallery],
     detailImages: [...product.detailImages],
     flavors: [...(product.flavors ?? [])],
@@ -38,6 +54,7 @@ const emptyProduct = (): ProductRecord => ({
   baseStockQuantity: 0,
   category: '',
   categoryId: null,
+  categoryIds: [],
   brand: '',
   brandId: null,
   previewImage: '/src/assets/logo.svg',
@@ -46,6 +63,7 @@ const emptyProduct = (): ProductRecord => ({
   status: '草稿',
   description: '',
   longDescription: '',
+  specificationHtml: '',
   badge: '',
   rating: 0,
   reviews: 0,
@@ -63,52 +81,264 @@ const isCreating = ref(false)
 const isProductModalOpen = ref(false)
 const isPreviewModalOpen = ref(false)
 const isOverrideModalOpen = ref(false)
+const bulkNameGenerationInstruction = ref('')
+const isGeneratingBulkCustomNames = ref(false)
+const bulkCustomNameResultMessage = ref('')
+const bulkCustomNameResultTenants = ref<string[]>([])
 const selectedProductIds = ref<number[]>([])
+const selectedOverrideTenantIds = ref<number[]>([])
+const categoryFilterDraftId = ref(0)
+const brandFilterDraftId = ref(0)
+const selectedCategoryFilterId = ref(0)
+const selectedBrandFilterId = ref(0)
+const searchDraftKeyword = ref('')
+const appliedSearchKeyword = ref('')
 const bulkStatus = ref<ProductRecord['status']>('上架中')
 const galleryInput = ref('')
-const detailImagesInput = ref('')
 const skuVariantInput = ref('')
+const categoryTreeRef = ref<any>(null)
+
+function sortCategories(items: typeof store.categories) {
+  return [...items].sort((a, b) => {
+    if (a.sortOrder !== b.sortOrder) {
+      return a.sortOrder - b.sortOrder
+    }
+    return a.id - b.id
+  })
+}
 
 const selectedProduct = computed(() => {
   return store.products.find((item) => item.id === selectedProductId.value) ?? null
 })
 
-const isAllProductsSelected = computed(() => {
-  return store.products.length > 0 && selectedProductIds.value.length === store.products.length
+const overrideTenants = computed(() => store.tenants)
+const isAllOverrideTenantsSelected = computed(() =>
+  overrideTenants.value.length > 0 && selectedOverrideTenantIds.value.length === overrideTenants.value.length,
+)
+
+const selectedCategoryFilter = computed(() => {
+  return categoryOptions.value.find((item) => item.id === selectedCategoryFilterId.value) ?? null
 })
 
-const selectedOverride = computed(() => {
-  if (!selectedProduct.value) {
-    return null
-  }
-  return store.getOverride(selectedProduct.value.id, selectedTenantId.value)
+const selectedBrandFilter = computed(() => {
+  return brandOptions.value.find((item) => item.id === selectedBrandFilterId.value) ?? null
 })
+
+const visibleSelectedProductIds = computed(() => {
+  const visibleIds = new Set(filteredProducts.value.map((item) => item.id))
+  return selectedProductIds.value.filter((id) => visibleIds.has(id))
+})
+
+const isAllProductsSelected = computed(() => {
+  return filteredProducts.value.length > 0 && visibleSelectedProductIds.value.length === filteredProducts.value.length
+})
+
 const selectedTenant = computed(() => {
   return store.tenants.find((item) => item.id === selectedTenantId.value) ?? null
 })
 
 const categoryOptions = computed(() => store.getCategories())
 const brandOptions = computed(() => store.getBrands())
+const categoriesByParent = computed(() => {
+  const byParent = new Map<number | null, typeof categoryOptions.value>()
+  for (const category of categoryOptions.value) {
+    const key = category.parentId ?? null
+    const bucket = byParent.get(key) ?? []
+    bucket.push(category)
+    byParent.set(key, bucket)
+  }
+
+  for (const [key, bucket] of byParent.entries()) {
+    byParent.set(key, sortCategories(bucket))
+  }
+
+  return byParent
+})
+const categoryTreeOptions = computed(() => {
+  const result: Array<{ id: number; label: string }> = []
+
+  const walk = (parentId: number | null, ancestorHasNext: boolean[]) => {
+    const items = categoriesByParent.value.get(parentId) ?? []
+    items.forEach((item, index) => {
+      const isLast = index === items.length - 1
+      const guides = ancestorHasNext
+        .map((hasNext) => (hasNext ? '│  ' : '   '))
+        .join('')
+      const branch = ancestorHasNext.length ? `${isLast ? '└─ ' : '├─ '}` : '● '
+
+      result.push({
+        id: item.id,
+        label: `${guides}${branch}${item.name}`,
+      })
+
+      walk(item.id, [...ancestorHasNext, !isLast])
+    })
+  }
+
+  walk(null, [])
+  return result
+})
+const categoryNameMap = computed(() => new Map(categoryOptions.value.map((item) => [item.id, item.name])))
+const categoryTreeList = computed(() => {
+  const result: Array<{
+    id: number
+    name: string
+    depth: number
+    isLast: boolean
+    ancestorHasNext: boolean[]
+  }> = []
+
+  const walk = (parentId: number | null, depth: number, ancestorHasNext: boolean[]) => {
+    const items = categoriesByParent.value.get(parentId) ?? []
+    items.forEach((item, index) => {
+      const isLast = index === items.length - 1
+      result.push({
+        id: item.id,
+        name: item.name,
+        depth,
+        isLast,
+        ancestorHasNext,
+      })
+      walk(item.id, depth + 1, [...ancestorHasNext, !isLast])
+    })
+  }
+
+  walk(null, 0, [])
+  return result
+})
+const categoryTreeData = computed(() => {
+  type CategoryTreeNode = { id: number; label: string; children: CategoryTreeNode[] }
+  const buildNodes = (parentId: number | null): CategoryTreeNode[] => {
+    const items = categoriesByParent.value.get(parentId) ?? []
+    return items.map((item) => ({
+      id: item.id,
+      label: item.name,
+      children: buildNodes(item.id),
+    }))
+  }
+
+  return buildNodes(null)
+})
+const selectedCategoryTagList = computed(() => {
+  const selectedIds = productForm.value.categoryIds?.length
+    ? productForm.value.categoryIds
+    : productForm.value.categoryId != null
+      ? [productForm.value.categoryId]
+      : []
+
+  return selectedIds.map((id) => ({
+    id,
+    name: categoryNameMap.value.get(id) ?? `#${id}`,
+    isPrimary: productForm.value.categoryId === id,
+  }))
+})
+const categoryDescendantIdsMap = computed(() => {
+  const result = new Map<number, Set<number>>()
+
+  const collectDescendants = (categoryId: number): Set<number> => {
+    const cached = result.get(categoryId)
+    if (cached) {
+      return cached
+    }
+
+    const ids = new Set<number>([categoryId])
+    const children = categoriesByParent.value.get(categoryId) ?? []
+    for (const child of children) {
+      for (const descendantId of collectDescendants(child.id)) {
+        ids.add(descendantId)
+      }
+    }
+
+    result.set(categoryId, ids)
+    return ids
+  }
+
+  for (const category of categoryOptions.value) {
+    collectDescendants(category.id)
+  }
+
+  return result
+})
+const categoryProductCountMap = computed(() => {
+  const normalizedKeyword = appliedSearchKeyword.value.trim().toLowerCase()
+  const result = new Map<number, number>()
+
+  for (const category of categoryOptions.value) {
+    const descendantIds = categoryDescendantIdsMap.value.get(category.id) ?? new Set([category.id])
+    const count = store.products.filter((product) => {
+      const productCategoryIds = product.categoryIds?.length
+        ? product.categoryIds
+        : product.categoryId != null
+          ? [product.categoryId]
+          : []
+      const brandMatches =
+        selectedBrandFilterId.value === 0 ||
+        product.brandId === selectedBrandFilterId.value ||
+        (!!selectedBrandFilter.value && product.brand === selectedBrandFilter.value.name)
+
+      const searchMatches =
+        !normalizedKeyword ||
+        [
+          product.baseName,
+          product.sku,
+          product.slug,
+          product.category,
+          product.brand,
+          product.description,
+        ].some((value) => String(value ?? '').toLowerCase().includes(normalizedKeyword))
+
+      return brandMatches && searchMatches && productCategoryIds.some((id) => descendantIds.has(id))
+    }).length
+
+    result.set(category.id, count)
+  }
+
+  return result
+})
+const filteredProducts = computed(() => {
+  return store.products.filter((product) => {
+    const selectedCategoryIds =
+      selectedCategoryFilterId.value === 0
+        ? null
+        : categoryDescendantIdsMap.value.get(selectedCategoryFilterId.value) ?? new Set([selectedCategoryFilterId.value])
+    const productCategoryIds = product.categoryIds?.length
+      ? product.categoryIds
+      : product.categoryId != null
+        ? [product.categoryId]
+        : []
+    const normalizedKeyword = appliedSearchKeyword.value.trim().toLowerCase()
+    const searchMatches =
+      !normalizedKeyword ||
+      [
+        product.baseName,
+        product.sku,
+        product.slug,
+        product.category,
+        product.brand,
+        product.description,
+      ].some((value) => String(value ?? '').toLowerCase().includes(normalizedKeyword))
+
+    const categoryMatches =
+      selectedCategoryFilterId.value === 0 ||
+      productCategoryIds.some((id) => selectedCategoryIds?.has(id)) ||
+      (!!selectedCategoryFilter.value && product.category === selectedCategoryFilter.value.name)
+
+    const brandMatches =
+      selectedBrandFilterId.value === 0 ||
+      product.brandId === selectedBrandFilterId.value ||
+      (!!selectedBrandFilter.value && product.brand === selectedBrandFilter.value.name)
+
+    return categoryMatches && brandMatches && searchMatches
+  })
+})
 
 const productForm = ref<ProductRecord>(store.products[0] ? cloneProduct(store.products[0]) : emptyProduct())
-const overrideForm = ref<ProductOverrideRecord>({
-  id: 0,
-  tenantId: selectedTenantId.value,
-  productId: selectedProduct.value?.id ?? 0,
-  customName: '',
-  customDescription: '',
-  customPrice: null,
-  customStockQuantity: null,
-  seoTitle: '',
-  seoDescription: '',
-  isVisible: true,
-})
+const overrideForms = ref<Record<number, ProductOverrideRecord>>({})
 
 function hydrateProductForm(product: ProductRecord) {
   const cloned = cloneProduct(product)
   productForm.value = cloned
   galleryInput.value = cloned.gallery.join('\n')
-  detailImagesInput.value = cloned.detailImages.join('\n')
   skuVariantInput.value = formatSkuVariantInput(cloned.skuVariants ?? [])
 }
 
@@ -140,26 +370,32 @@ watch(
 )
 
 watch(
-  [selectedProduct, selectedOverride, selectedTenantId],
-  ([product, override, tenantId]) => {
+  [selectedProduct, () => store.tenants, () => store.overrides],
+  ([product]) => {
     if (!product) {
+      overrideForms.value = {}
       return
     }
 
-    overrideForm.value = {
-      id: override?.id ?? 0,
-      tenantId,
-      productId: product.id,
-      customName: override?.customName ?? '',
-      customDescription: override?.customDescription ?? '',
-      customPrice: override?.customPrice ?? null,
-      customStockQuantity: override?.customStockQuantity ?? null,
-      seoTitle: override?.seoTitle ?? '',
-      seoDescription: override?.seoDescription ?? '',
-      isVisible: override?.isVisible ?? true,
+    const nextForms: Record<number, ProductOverrideRecord> = {}
+    for (const tenant of store.tenants) {
+      const override = store.getOverride(product.id, tenant.id)
+      nextForms[tenant.id] = {
+        id: override?.id ?? 0,
+        tenantId: tenant.id,
+        productId: product.id,
+        customName: override?.customName ?? '',
+        customDescription: override?.customDescription ?? '',
+        customPrice: override?.customPrice ?? null,
+        customStockQuantity: override?.customStockQuantity ?? null,
+        seoTitle: override?.seoTitle ?? '',
+        seoDescription: override?.seoDescription ?? '',
+        isVisible: override?.isVisible ?? true,
+      }
     }
+    overrideForms.value = nextForms
   },
-  { immediate: true },
+  { immediate: true, deep: true },
 )
 
 function selectProduct(productId: number) {
@@ -178,7 +414,60 @@ function toggleProductSelection(productId: number, checked: boolean) {
 }
 
 function toggleSelectAllProducts(checked: boolean) {
-  selectedProductIds.value = checked ? store.products.map((item) => item.id) : []
+  selectedProductIds.value = checked ? filteredProducts.value.map((item) => item.id) : []
+}
+
+function handleProductSelectionChange(rows: ProductRecord[]) {
+  selectedProductIds.value = rows.map((row) => row.id)
+}
+
+function handleCurrentProductChange(row: ProductRecord | undefined) {
+  if (!row) {
+    return
+  }
+  selectProduct(row.id)
+}
+
+function toggleOverrideTenantSelection(tenantId: number, checked: boolean) {
+  if (checked) {
+    if (!selectedOverrideTenantIds.value.includes(tenantId)) {
+      selectedOverrideTenantIds.value = [...selectedOverrideTenantIds.value, tenantId]
+    }
+    return
+  }
+  selectedOverrideTenantIds.value = selectedOverrideTenantIds.value.filter((id) => id !== tenantId)
+}
+
+function toggleSelectAllOverrideTenants(checked: boolean) {
+  selectedOverrideTenantIds.value = checked ? overrideTenants.value.map((tenant) => tenant.id) : []
+}
+
+function applyFilters() {
+  selectedCategoryFilterId.value = categoryFilterDraftId.value
+  selectedBrandFilterId.value = brandFilterDraftId.value
+}
+
+function applySearch() {
+  appliedSearchKeyword.value = searchDraftKeyword.value.trim()
+}
+
+function submitToolbarFilters() {
+  applyFilters()
+  applySearch()
+}
+
+function resetFilters() {
+  categoryFilterDraftId.value = 0
+  brandFilterDraftId.value = 0
+  selectedCategoryFilterId.value = 0
+  selectedBrandFilterId.value = 0
+  searchDraftKeyword.value = ''
+  appliedSearchKeyword.value = ''
+}
+
+function clearSearch() {
+  searchDraftKeyword.value = ''
+  appliedSearchKeyword.value = ''
 }
 
 function startCreateProduct() {
@@ -186,7 +475,6 @@ function startCreateProduct() {
   isProductModalOpen.value = true
   productForm.value = emptyProduct()
   galleryInput.value = productForm.value.gallery.join('\n')
-  detailImagesInput.value = productForm.value.detailImages.join('\n')
   skuVariantInput.value = ''
 }
 
@@ -209,7 +497,6 @@ function closeProductModal() {
   } else {
     productForm.value = emptyProduct()
     galleryInput.value = productForm.value.gallery.join('\n')
-    detailImagesInput.value = productForm.value.detailImages.join('\n')
     skuVariantInput.value = ''
   }
 
@@ -248,6 +535,13 @@ function openOverrideForProduct(productId: number) {
   openOverrideModal()
 }
 
+function openStorefrontProduct(product: ProductRecord) {
+  const slug = product.slug?.trim() || slugifyProductName(product.baseName)
+  const path = `/products/${product.id}-${slug}`
+  const base = window.location.origin.replace(/\/fuck\/?$/, '')
+  window.open(`${base}${path}`, '_blank', 'noopener,noreferrer')
+}
+
 function syncGalleryFromInput() {
   const items = galleryInput.value
     .split('\n')
@@ -256,20 +550,8 @@ function syncGalleryFromInput() {
   productForm.value.gallery = items.length ? items : [productForm.value.previewImage]
 }
 
-function syncDetailImagesFromInput() {
-  const items = detailImagesInput.value
-    .split('\n')
-    .map((item) => item.trim())
-    .filter(Boolean)
-  productForm.value.detailImages = items.length ? items : [productForm.value.previewImage]
-}
-
 function syncGalleryInput() {
   galleryInput.value = productForm.value.gallery.join('\n')
-}
-
-function syncDetailImagesInput() {
-  detailImagesInput.value = productForm.value.detailImages.join('\n')
 }
 
 function syncVariantConfigFromInput() {
@@ -343,45 +625,28 @@ async function uploadFile(file: File) {
   return uploaded.url
 }
 
-async function appendImages(files: FileList | null, field: 'gallery' | 'detailImages') {
+async function appendImages(files: FileList | null) {
   if (!files?.length) {
     return
   }
 
   const uploadedImages = await Promise.all(Array.from(files).map(uploadFile))
-  const currentImages = field === 'gallery' ? productForm.value.gallery : productForm.value.detailImages
+  const currentImages = productForm.value.gallery
   const mergedImages = [...currentImages, ...uploadedImages.filter(Boolean)]
 
-  if (field === 'gallery') {
-    productForm.value.gallery = mergedImages
-    if (!productForm.value.previewImage || productForm.value.previewImage === '/src/assets/logo.svg') {
-      productForm.value.previewImage = mergedImages[0] ?? productForm.value.previewImage
-    }
-    syncGalleryInput()
-    return
+  productForm.value.gallery = mergedImages
+  if (!productForm.value.previewImage || productForm.value.previewImage === '/src/assets/logo.svg') {
+    productForm.value.previewImage = mergedImages[0] ?? productForm.value.previewImage
   }
-
-  productForm.value.detailImages = mergedImages
-  syncDetailImagesInput()
+  syncGalleryInput()
 }
 
 async function uploadGalleryImages(event: Event) {
   const target = event.target as HTMLInputElement
   try {
-    await appendImages(target.files, 'gallery')
+    await appendImages(target.files)
   } catch (error) {
     console.error('上傳商品圖失敗:', error)
-    alert((error as Error).message)
-  }
-  target.value = ''
-}
-
-async function uploadDetailImages(event: Event) {
-  const target = event.target as HTMLInputElement
-  try {
-    await appendImages(target.files, 'detailImages')
-  } catch (error) {
-    console.error('上傳詳情圖失敗:', error)
     alert((error as Error).message)
   }
   target.value = ''
@@ -396,18 +661,123 @@ function removeGalleryImage(index: number) {
   syncGalleryInput()
 }
 
-function removeDetailImage(index: number) {
-  productForm.value.detailImages.splice(index, 1)
-  syncDetailImagesInput()
-}
-
 function setPreviewImage(image: string) {
+  const currentIndex = productForm.value.gallery.findIndex((item) => item === image)
   productForm.value.previewImage = image
+  if (currentIndex > 0) {
+    const [selectedImage] = productForm.value.gallery.splice(currentIndex, 1)
+    if (selectedImage) {
+      productForm.value.gallery.unshift(selectedImage)
+    }
+    syncGalleryInput()
+  }
 }
 
 function syncCategorySelection() {
   const category = categoryOptions.value.find((item) => item.id === productForm.value.categoryId)
   productForm.value.category = category?.name ?? ''
+  const categoryId = productForm.value.categoryId
+  if (categoryId == null) {
+    productForm.value.categoryIds = []
+    return
+  }
+  const categoryIds = productForm.value.categoryIds ?? []
+  if (!categoryIds.includes(categoryId)) {
+    productForm.value.categoryIds = [categoryId, ...categoryIds]
+  }
+}
+
+function syncAdditionalCategorySelection() {
+  const categoryIds = [...new Set((productForm.value.categoryIds ?? []).filter((id) => Number.isFinite(id) && id > 0))]
+  productForm.value.categoryIds = categoryIds
+
+  if (!categoryIds.length) {
+    productForm.value.categoryId = null
+    productForm.value.category = ''
+    return
+  }
+
+  if (productForm.value.categoryId == null || !categoryIds.includes(productForm.value.categoryId)) {
+    productForm.value.categoryId = categoryIds[0]
+  }
+  syncCategorySelection()
+}
+
+function isCategoryChecked(categoryId: number) {
+  return (productForm.value.categoryIds ?? []).includes(categoryId)
+}
+
+function toggleProductCategory(categoryId: number, checked: boolean) {
+  const currentIds = new Set(productForm.value.categoryIds ?? [])
+
+  if (checked) {
+    currentIds.add(categoryId)
+  } else {
+    currentIds.delete(categoryId)
+  }
+
+  productForm.value.categoryIds = [...currentIds]
+  syncAdditionalCategorySelection()
+}
+
+function removeProductCategory(categoryId: number) {
+  toggleProductCategory(categoryId, false)
+}
+
+async function syncCategoryTreeSelection() {
+  await nextTick()
+  if (!categoryTreeRef.value) {
+    return
+  }
+  categoryTreeRef.value.setCheckedKeys(productForm.value.categoryIds ?? [])
+}
+
+function handleCategoryTreeCheck() {
+  if (!categoryTreeRef.value) {
+    return
+  }
+  productForm.value.categoryIds = categoryTreeRef.value.getCheckedKeys(false)
+  syncAdditionalCategorySelection()
+}
+
+function formatProductCategorySummary(product: ProductRecord) {
+  const categoryIds = product.categoryIds?.length
+    ? product.categoryIds
+    : product.categoryId != null
+      ? [product.categoryId]
+      : []
+
+  if (!categoryIds.length) {
+    return '未分類'
+  }
+
+  return categoryIds
+    .map((id) => categoryNameMap.value.get(id) ?? `#${id}`)
+    .join(' / ')
+}
+
+function getProductCategoryDisplay(product: ProductRecord) {
+  const categoryIds = product.categoryIds?.length
+    ? product.categoryIds
+    : product.categoryId != null
+      ? [product.categoryId]
+      : []
+
+  if (!categoryIds.length) {
+    return {
+      primary: '未分類',
+      extras: [] as string[],
+    }
+  }
+
+  const names = categoryIds
+    .map((id) => categoryNameMap.value.get(id) ?? `#${id}`)
+    .filter(Boolean)
+
+  return {
+    primary: names[0] ?? '未分類',
+    extras: names.slice(1),
+  }
 }
 
 function syncBrandSelection() {
@@ -415,11 +785,15 @@ function syncBrandSelection() {
   productForm.value.brand = brand?.name ?? ''
 }
 
+function getFallbackProductId() {
+  return filteredProducts.value[0]?.id ?? store.products[0]?.id ?? 0
+}
+
 async function saveProduct() {
   try {
     syncGalleryFromInput()
-    syncDetailImagesFromInput()
     syncVariantConfigFromInput()
+    syncAdditionalCategorySelection()
 
     if (isCreating.value || productForm.value.id === 0) {
       const created = await store.createProduct({
@@ -429,6 +803,7 @@ async function saveProduct() {
         baseStockQuantity: productForm.value.baseStockQuantity,
         category: productForm.value.category,
         categoryId: productForm.value.categoryId,
+        categoryIds: productForm.value.categoryIds,
         brand: productForm.value.brand,
         brandId: productForm.value.brandId,
         previewImage: productForm.value.previewImage,
@@ -437,6 +812,7 @@ async function saveProduct() {
         status: productForm.value.status,
         description: productForm.value.description,
         longDescription: productForm.value.longDescription,
+        specificationHtml: productForm.value.specificationHtml,
         badge: productForm.value.badge,
         rating: productForm.value.rating,
         reviews: productForm.value.reviews,
@@ -456,8 +832,8 @@ async function saveProduct() {
 
     await store.updateProduct({
       ...productForm.value,
+      categoryIds: [...(productForm.value.categoryIds ?? [])],
       gallery: [...productForm.value.gallery],
-      detailImages: [...productForm.value.detailImages],
       variants: [...(productForm.value.variants ?? [])],
       optionGroups: [...(productForm.value.optionGroups ?? [])],
       skuVariants: [...(productForm.value.skuVariants ?? [])],
@@ -489,14 +865,13 @@ async function removeProductById(productId: number) {
     await store.deleteProduct(productId)
     isCreating.value = false
     isProductModalOpen.value = false
-    const fallback = store.products[0]
+    const fallback = store.products.find((item) => item.id === getFallbackProductId())
     selectedProductId.value = fallback?.id ?? 0
     if (fallback) {
       hydrateProductForm(fallback)
     } else {
       productForm.value = emptyProduct()
       galleryInput.value = productForm.value.gallery.join('\n')
-      detailImagesInput.value = productForm.value.detailImages.join('\n')
       skuVariantInput.value = ''
     }
     alert('商品已成功刪除')
@@ -526,14 +901,13 @@ async function removeSelectedProducts() {
     isCreating.value = false
     isProductModalOpen.value = false
 
-    const fallback = store.products[0]
+    const fallback = store.products.find((item) => item.id === getFallbackProductId())
     selectedProductId.value = fallback?.id ?? 0
     if (fallback) {
       hydrateProductForm(fallback)
     } else {
       productForm.value = emptyProduct()
       galleryInput.value = productForm.value.gallery.join('\n')
-      detailImagesInput.value = productForm.value.detailImages.join('\n')
       skuVariantInput.value = ''
     }
 
@@ -581,26 +955,180 @@ async function applyBulkStatusChange() {
   )
 }
 
-async function saveOverride() {
+function getOverrideForm(tenantId: number) {
+  return overrideForms.value[tenantId]
+}
+
+async function saveOverride(tenantId: number) {
   if (!selectedProduct.value) {
     alert('請先選擇商品')
     return
   }
-  if (!selectedTenant.value) {
+  const tenant = store.tenants.find((item) => item.id === tenantId)
+  if (!tenant) {
     alert('請先選擇有效租戶')
+    return
+  }
+  const form = getOverrideForm(tenantId)
+  if (!form) {
+    alert('找不到租戶覆寫表單')
     return
   }
 
   try {
     await store.upsertOverride({
-      ...overrideForm.value,
-      tenantId: selectedTenant.value.id,
+      ...form,
+      tenantId: tenant.id,
       productId: selectedProduct.value.id,
     })
-    alert('租戶覆寫已成功儲存')
+    const refreshed = store.getOverride(selectedProduct.value.id, tenant.id)
+    if (refreshed) {
+      overrideForms.value = {
+        ...overrideForms.value,
+        [tenant.id]: {
+          ...refreshed,
+          customImages: refreshed.customImages ?? [],
+          customDetailImages: refreshed.customDetailImages ?? [],
+        },
+      }
+    }
+    alert(`「${tenant.name}」租戶覆寫已成功儲存`)
   } catch (error) {
     console.error('保存租戶覆寫失敗:', error)
     alert('保存租戶覆寫失敗: ' + (error as Error).message)
+  }
+}
+
+async function bulkGenerateCustomNames() {
+  if (!selectedTenant.value) {
+    alert('請先選擇有效租戶')
+    return
+  }
+  if (!selectedProductIds.value.length) {
+    alert('請先選擇至少一個商品')
+    return
+  }
+
+  isGeneratingBulkCustomNames.value = true
+  try {
+    const results = await adminAPI.bulkGenerateCustomNames(
+      selectedProductIds.value,
+      selectedTenant.value.id,
+      bulkNameGenerationInstruction.value.trim(),
+    )
+
+    for (const item of results as BulkGeneratedOverrideNameRecord[]) {
+      const existing = store.getOverride(item.productId, item.tenantId)
+      await store.upsertOverride({
+        id: existing?.id ?? 0,
+        tenantId: item.tenantId,
+        productId: item.productId,
+        customName: item.customName,
+        customDescription: existing?.customDescription ?? '',
+        customPrice: existing?.customPrice ?? null,
+        customStockQuantity: existing?.customStockQuantity ?? null,
+        customImages: existing?.customImages ?? [],
+        customDetailImages: existing?.customDetailImages ?? [],
+        seoTitle: existing?.seoTitle ?? '',
+        seoDescription: existing?.seoDescription ?? '',
+        isVisible: existing?.isVisible ?? true,
+      })
+    }
+
+    if (selectedProduct.value && selectedTenant.value) {
+      const refreshed = store.getOverride(selectedProduct.value.id, selectedTenant.value.id)
+      if (refreshed) {
+        overrideForms.value = {
+          ...overrideForms.value,
+          [selectedTenant.value.id]: {
+            ...refreshed,
+            customImages: refreshed.customImages ?? [],
+            customDetailImages: refreshed.customDetailImages ?? [],
+          },
+        }
+      }
+    }
+
+    bulkCustomNameResultMessage.value = `已為 ${results.length} 個商品生成自訂商品名稱`
+    alert(`已為 ${results.length} 個商品生成自訂商品名稱`)
+  } catch (error) {
+    bulkCustomNameResultMessage.value = ''
+    console.error('批量生成自訂商品名稱失敗:', error)
+    alert('批量生成自訂商品名稱失敗: ' + (error as Error).message)
+  } finally {
+    isGeneratingBulkCustomNames.value = false
+  }
+}
+
+async function bulkGenerateOverrideNamesForCurrentProduct() {
+  if (!selectedProduct.value) {
+    alert('請先選擇商品')
+    return
+  }
+  if (!selectedOverrideTenantIds.value.length) {
+    alert('請先勾選至少一個租戶')
+    return
+  }
+
+  isGeneratingBulkCustomNames.value = true
+  bulkCustomNameResultMessage.value = ''
+  bulkCustomNameResultTenants.value = []
+
+  try {
+    let successCount = 0
+
+    const targetTenants = overrideTenants.value.filter((tenant) => selectedOverrideTenantIds.value.includes(tenant.id))
+
+    for (const tenant of targetTenants) {
+      const results = await adminAPI.bulkGenerateCustomNames(
+        [selectedProduct.value.id],
+        tenant.id,
+        bulkNameGenerationInstruction.value.trim(),
+      )
+
+      for (const item of results as BulkGeneratedOverrideNameRecord[]) {
+        const existing = store.getOverride(item.productId, item.tenantId)
+        await store.upsertOverride({
+          id: existing?.id ?? 0,
+          tenantId: item.tenantId,
+          productId: item.productId,
+          customName: item.customName,
+          customDescription: existing?.customDescription ?? '',
+          customPrice: existing?.customPrice ?? null,
+          customStockQuantity: existing?.customStockQuantity ?? null,
+          customImages: existing?.customImages ?? [],
+          customDetailImages: existing?.customDetailImages ?? [],
+          seoTitle: existing?.seoTitle ?? '',
+          seoDescription: existing?.seoDescription ?? '',
+          isVisible: existing?.isVisible ?? true,
+        })
+        successCount += 1
+      }
+    }
+
+    for (const tenant of targetTenants) {
+      const refreshed = store.getOverride(selectedProduct.value.id, tenant.id)
+      if (refreshed) {
+        overrideForms.value = {
+          ...overrideForms.value,
+          [tenant.id]: {
+            ...refreshed,
+            customImages: refreshed.customImages ?? [],
+            customDetailImages: refreshed.customDetailImages ?? [],
+          },
+        }
+      }
+    }
+
+    bulkCustomNameResultMessage.value = `已為勾選的 ${successCount} 個租戶生成自訂商品名稱`
+    bulkCustomNameResultTenants.value = targetTenants.map((tenant) => tenant.name)
+  } catch (error) {
+    console.error('批量生成目前商品租戶名稱失敗:', error)
+    bulkCustomNameResultMessage.value = ''
+    bulkCustomNameResultTenants.value = []
+    alert('批量生成目前商品租戶名稱失敗: ' + (error as Error).message)
+  } finally {
+    isGeneratingBulkCustomNames.value = false
   }
 }
 
@@ -611,7 +1139,12 @@ onMounted(async () => {
   if (!store.tenants.length) {
     await store.fetchTenants()
   }
-  const fallback = store.products[0]
+  await Promise.all([
+    store.fetchCategories(),
+    store.fetchBrands(),
+  ])
+
+  const fallback = store.products.find((item) => item.id === getFallbackProductId())
   if (fallback && !selectedProduct.value) {
     selectedProductId.value = fallback.id
     hydrateProductForm(fallback)
@@ -619,185 +1152,256 @@ onMounted(async () => {
   const selectedTenant = store.tenants[0]
   if (selectedTenant) {
     selectedTenantId.value = selectedTenant.id
-    await Promise.all([
-      store.fetchCategories(),
-      store.fetchBrands(),
-    ])
-    if (selectedProductId.value) {
-      await store.fetchProductOverride(selectedProductId.value, selectedTenant.id)
-    }
+  }
+  if (selectedProductId.value) {
+    await Promise.all(store.tenants.map((tenant) => store.fetchProductOverride(selectedProductId.value, tenant.id)))
   }
 })
 
 watch(
-  [selectedProductId, selectedTenantId],
-  async ([productId, tenantId]) => {
-    if (productId && tenantId && !isCreating.value) {
-      await Promise.all([
-        store.fetchProductOverride(productId, tenantId),
-        store.fetchCategories(),
-        store.fetchBrands(),
-      ])
+  [selectedProductId, () => store.tenants.length],
+  async ([productId]) => {
+    if (productId && store.tenants.length && !isCreating.value) {
+      await Promise.all(store.tenants.map((tenant) => store.fetchProductOverride(productId, tenant.id)))
     }
+  },
+)
+
+watch(
+  filteredProducts,
+  (products) => {
+    const visibleIds = new Set(products.map((item) => item.id))
+    selectedProductIds.value = selectedProductIds.value.filter((id) => visibleIds.has(id))
+
+    if (isCreating.value || !products.length) {
+      if (!products.length && !isCreating.value) {
+        selectedProductId.value = 0
+      }
+      return
+    }
+
+    if (!visibleIds.has(selectedProductId.value)) {
+      const fallback = products[0]
+      selectedProductId.value = fallback?.id ?? 0
+      if (fallback) {
+        hydrateProductForm(fallback)
+      }
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [productForm.value.categoryId, ...(productForm.value.categoryIds ?? [])],
+  () => {
+    syncCategoryTreeSelection()
   },
 )
 </script>
 
 <template>
   <section class="products-page">
-    <div class="page-heading">
+    <div class="element-page-heading">
       <div>
         <p class="label">Product Center</p>
         <h2>商品 CRUD、覆寫與預覽圖</h2>
         <p class="subcopy">現在可直接新增、修改、刪除全域商品，維護主圖與圖庫預覽，並繼續為不同租戶設定商品覆寫。</p>
       </div>
-      <button class="primary" type="button" @click="startCreateProduct">新增商品</button>
+      <el-button type="primary" :icon="Plus" @click="startCreateProduct">新增商品</el-button>
     </div>
 
-    <div class="metrics-grid">
-      <article class="metric-card">
-        <p>全域商品</p>
-        <strong>{{ store.products.length }}</strong>
-      </article>
-      <article class="metric-card">
-        <p>可見覆寫</p>
-        <strong>{{ store.visibleOverrides.length }}</strong>
-      </article>
-      <article class="metric-card">
-        <p>啟用租戶</p>
-        <strong>{{ store.activeTenants.length }}</strong>
-      </article>
-    </div>
+    <el-row :gutter="16" class="metrics-grid">
+      <el-col :md="8" :sm="24">
+        <el-card shadow="never">
+          <p class="metric-label">全域商品</p>
+          <strong class="metric-value">{{ store.products.length }}</strong>
+        </el-card>
+      </el-col>
+      <el-col :md="8" :sm="24">
+        <el-card shadow="never">
+          <p class="metric-label">篩選結果</p>
+          <strong class="metric-value">{{ filteredProducts.length }}</strong>
+        </el-card>
+      </el-col>
+      <el-col :md="8" :sm="24">
+        <el-card shadow="never">
+          <p class="metric-label">可見覆寫</p>
+          <strong class="metric-value">{{ store.visibleOverrides.length }}</strong>
+        </el-card>
+      </el-col>
+    </el-row>
 
     <div class="workspace-grid">
-      <article class="table-card">
-        <div class="table-toolbar">
-          <div class="table-toolbar-head">
-            <span>商品清單</span>
-          </div>
-          <div class="bulk-toolbar">
-            <label class="bulk-select-all">
-              <input
-                :checked="isAllProductsSelected"
-                type="checkbox"
-                @change="toggleSelectAllProducts(($event.target as HTMLInputElement).checked)"
-              />
-              <span>全選</span>
-            </label>
-            <span class="bulk-count">已選 {{ selectedProductIds.length }}</span>
-            <div class="bulk-status-group">
-              <select v-model="bulkStatus" class="bulk-status-select">
-                <option value="上架中">上架中</option>
-                <option value="草稿">草稿</option>
-                <option value="缺貨">缺貨</option>
-              </select>
-              <button class="secondary" type="button" @click="applyBulkStatusChange">批量修改狀態</button>
+      <el-card class="table-card" shadow="never">
+        <template #header>
+          <div class="card-header">
+            <div>
+              <span class="title">商品清單</span>
+              <small>{{ filteredProducts.length }} / {{ store.products.length }} 件商品</small>
             </div>
-            <button class="danger" type="button" @click="removeSelectedProducts">批量刪除</button>
+            <div class="toolbar-actions">
+              <el-select v-model="categoryFilterDraftId" class="toolbar-field toolbar-field-wide">
+                <el-option :value="0" :label="`全部分类 (${filteredProducts.length})`" />
+                <el-option
+                  v-for="category in categoryTreeOptions"
+                  :key="category.id"
+                  :value="category.id"
+                  :label="`${category.label} (${categoryProductCountMap.get(category.id) ?? 0})`"
+                />
+              </el-select>
+              <el-select v-model="brandFilterDraftId" class="toolbar-field">
+                <el-option :value="0" label="全部品牌" />
+                <el-option v-for="brand in brandOptions" :key="brand.id" :value="brand.id" :label="brand.name" />
+              </el-select>
+              <el-input
+                v-model="searchDraftKeyword"
+                placeholder="搜索商品名称、SKU、Slug"
+                class="toolbar-field toolbar-search-field"
+                @keyup.enter="submitToolbarFilters"
+              >
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+              <el-button @click="submitToolbarFilters">搜索 / 篩選</el-button>
+              <el-button @click="resetFilters">清空</el-button>
+            </div>
+          </div>
+        </template>
+
+        <div class="table-toolbar">
+          <div class="bulk-toolbar">
+            <div class="bulk-meta-group">
+              <span>已選 <strong class="bulk-count-badge">{{ selectedProductIds.length }}</strong></span>
+            </div>
+            <span class="filter-summary" v-if="selectedCategoryFilterId || selectedBrandFilterId || appliedSearchKeyword">
+              分类: {{ selectedCategoryFilter?.name || '全部' }} · 品牌: {{ selectedBrandFilter?.name || '全部' }}
+              <template v-if="appliedSearchKeyword"> · 搜索: {{ appliedSearchKeyword }}</template>
+            </span>
+            <el-select v-model="bulkStatus" class="bulk-status-field">
+              <el-option value="上架中" label="上架中" />
+              <el-option value="草稿" label="草稿" />
+              <el-option value="缺貨" label="缺貨" />
+            </el-select>
+            <el-button @click="applyBulkStatusChange">批量修改狀態</el-button>
+            <el-button type="danger" :icon="Delete" @click="removeSelectedProducts">批量刪除</el-button>
           </div>
         </div>
-        <div class="table-scroller">
-          <table class="product-table">
-            <thead>
-              <tr>
-                <th class="checkbox-col">
-                  <input
-                    :checked="isAllProductsSelected"
-                    type="checkbox"
-                    @change="toggleSelectAllProducts(($event.target as HTMLInputElement).checked)"
-                  />
-                </th>
-                <th>商品</th>
-                <th>SKU</th>
-                <th>Slug</th>
-                <th>分類 / 品牌</th>
-                <th>價格</th>
-                <th>庫存</th>
-                <th>狀態</th>
-                <th>更新時間</th>
-                <th class="action-col">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="product in store.products"
-                :key="product.id"
-                :class="{
-                  selected: product.id === selectedProductId && !isCreating,
-                  checked: selectedProductIds.includes(product.id),
-                }"
-                @click="selectProduct(product.id)"
-              >
-                <td class="checkbox-col" @click.stop>
-                  <input
-                    :checked="selectedProductIds.includes(product.id)"
-                    type="checkbox"
-                    @change="toggleProductSelection(product.id, ($event.target as HTMLInputElement).checked)"
-                  />
-                </td>
-                <td>
-                  <div class="product-cell">
-                    <img :src="displayImage(product.previewImage)" :alt="product.baseName" class="product-thumb" />
-                    <div class="product-copy">
-                      <strong>{{ product.baseName }}</strong>
-                      <small>{{ product.description || '尚未填寫商品摘要' }}</small>
-                    </div>
+        <div class="product-table-shell">
+          <el-table
+            :data="filteredProducts"
+            stripe
+            highlight-current-row
+            row-key="id"
+            class="product-admin-table"
+            @selection-change="handleProductSelectionChange"
+            @current-change="handleCurrentProductChange"
+          >
+            <el-table-column type="selection" width="50" fixed="left" />
+            <el-table-column label="商品" min-width="220">
+              <template #default="{ row }">
+                <div class="product-cell">
+                  <img :src="displayImage(row.previewImage)" :alt="row.baseName" class="product-thumb" />
+                  <div class="product-copy">
+                    <strong>{{ row.baseName }}</strong>
+                    <small>{{ row.description || '尚未填寫商品摘要' }}</small>
                   </div>
-                </td>
-                <td>{{ product.sku }}</td>
-                <td class="slug-cell">{{ product.slug || '—' }}</td>
-                <td>
-                  <div class="meta-stack">
-                    <span>{{ product.category || '未分類' }}</span>
-                    <small>{{ product.brand || '未綁定品牌' }}</small>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="sku" label="SKU" min-width="120" />
+            <el-table-column label="Slug" min-width="130">
+              <template #default="{ row }">
+                <span class="slug-text">{{ row.slug || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="分類" min-width="150">
+              <template #default="{ row }">
+                <div class="category-cell">
+                  <strong>{{ getProductCategoryDisplay(row).primary }}</strong>
+                  <div v-if="getProductCategoryDisplay(row).extras.length" class="category-chip-list">
+                    <span
+                      v-for="extraCategory in getProductCategoryDisplay(row).extras"
+                      :key="`${row.id}-${extraCategory}`"
+                      class="category-chip"
+                    >
+                      {{ extraCategory }}
+                    </span>
                   </div>
-                </td>
-                <td>NT$ {{ product.basePrice }}</td>
-              <td>{{ product.baseStockQuantity }}</td>
-              <td><span class="status-pill">{{ product.status }}</span></td>
-              <td>{{ product.updatedAt || '尚未更新' }}</td>
-              <td class="action-col" @click.stop>
-                  <div class="row-actions">
-                    <button class="secondary small-button" type="button" @click="openPreviewForProduct(product.id)">預覽</button>
-                    <button class="secondary small-button" type="button" @click="openOverrideForProduct(product.id)">覆寫</button>
-                    <button class="secondary small-button" type="button" @click="openEditProduct(product.id)">編輯</button>
-                    <button class="danger small-button" type="button" @click="removeProductById(product.id)">刪除</button>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="品牌" min-width="110">
+              <template #default="{ row }">
+                {{ row.brand || '未綁定品牌' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="價格" min-width="90">
+              <template #default="{ row }">
+                NT$ {{ row.basePrice }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="baseStockQuantity" label="庫存" width="90" />
+            <el-table-column label="狀態" width="110">
+              <template #default="{ row }">
+                <el-tag size="small" effect="light">{{ row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="更新時間" min-width="120">
+              <template #default="{ row }">
+                {{ row.updatedAt || '尚未更新' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="240" fixed="right">
+              <template #default="{ row }">
+              <div class="row-actions">
+                <el-button size="small" type="success" @click.stop="openStorefrontProduct(row)">前台查看</el-button>
+                <el-button size="small" :icon="View" @click.stop="openPreviewForProduct(row.id)">預覽</el-button>
+                <el-button size="small" @click.stop="openOverrideForProduct(row.id)">覆寫</el-button>
+                <el-button size="small" type="primary" :icon="Edit" @click.stop="openEditProduct(row.id)">編輯</el-button>
+                  <el-button size="small" type="danger" :icon="Delete" @click.stop="removeProductById(row.id)">刪除</el-button>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
         </div>
-      </article>
+      </el-card>
     </div>
 
-    <div
-      v-if="isPreviewModalOpen && selectedProduct"
-      class="modal-overlay"
-      role="dialog"
-      aria-modal="true"
-      @click.self="closePreviewModal"
+    <el-dialog
+      v-model="isPreviewModalOpen"
+      title="預覽商品內容"
+      width="960px"
+      :close-on-click-modal="false"
+      destroy-on-close
     >
-      <article class="modal-card preview-modal-card">
-        <div class="card-heading modal-heading">
+      <template #header>
+        <div class="element-dialog-heading">
           <div>
             <h3>預覽商品內容</h3>
-            <small>{{ selectedProduct.baseName }}</small>
+            <small>{{ selectedProduct?.baseName }}</small>
           </div>
-          <button class="secondary" type="button" @click="closePreviewModal">關閉</button>
         </div>
+      </template>
 
-        <div class="modal-body">
+      <div v-if="selectedProduct" class="element-dialog-body">
           <div class="preview-grid">
             <div class="main-preview">
-              <img :src="displayImage(selectedProduct.previewImage)" :alt="selectedProduct.baseName || 'product preview'" />
+              <el-image
+                :src="displayImage(selectedProduct.previewImage)"
+                :preview-src-list="selectedProduct.gallery?.length ? selectedProduct.gallery.map(displayImage) : [displayImage(selectedProduct.previewImage)]"
+                :initial-index="0"
+                fit="cover"
+              />
             </div>
             <div class="gallery-preview" v-if="selectedProduct.gallery?.length">
-              <img
+              <el-image
                 v-for="(image, index) in selectedProduct.gallery"
                 :key="`preview-gallery-${image}-${index}`"
                 :src="displayImage(image)"
-                :alt="`${selectedProduct.baseName || 'product'}-gallery-${index}`"
+                :preview-src-list="selectedProduct.gallery.map(displayImage)"
+                :initial-index="index"
+                fit="cover"
               />
             </div>
           </div>
@@ -814,7 +1418,7 @@ watch(
               </div>
               <div>
                 <dt>分類</dt>
-                <dd>{{ selectedProduct.category || '未分類' }}</dd>
+                <dd>{{ formatProductCategorySummary(selectedProduct) }}</dd>
               </div>
               <div>
                 <dt>品牌</dt>
@@ -840,255 +1444,412 @@ watch(
             </div>
 
             <div class="preview-copy-block" v-if="selectedProduct.longDescription">
-              <h4>商品說明</h4>
+              <h4>產品說明</h4>
               <p class="overview-description">{{ selectedProduct.longDescription }}</p>
             </div>
 
-            <div class="preview-grid" v-if="selectedProduct.detailImages?.length">
-              <h4>詳情圖預覽</h4>
-              <div class="detail-preview">
-                <img
-                  v-for="(image, index) in selectedProduct.detailImages"
-                  :key="`preview-detail-${image}-${index}`"
-                  :src="displayImage(image)"
-                  :alt="`${selectedProduct.baseName || 'product'}-detail-${index}`"
-                />
-              </div>
+            <div class="preview-copy-block" v-if="selectedProduct.specificationHtml">
+              <h4>產品規格</h4>
+              <p class="overview-description">{{ selectedProduct.specificationHtml }}</p>
+            </div>
+
+          </div>
+      </div>
+      <template #footer>
+        <el-button @click="closePreviewModal">關閉</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="isOverrideModalOpen"
+      title="租戶商品覆寫"
+      width="1220px"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <template #header>
+        <div class="element-dialog-heading">
+          <div>
+            <h3>租戶商品覆寫</h3>
+            <small>同一商品下，直接查看並編輯所有租戶的覆寫內容。可勾選租戶後批量生成名稱。</small>
+          </div>
+        </div>
+      </template>
+
+      <div v-if="selectedProduct" class="element-dialog-body">
+        <div class="override-toolbar">
+          <section class="override-toolbar-panel override-toolbar-summary">
+            <p class="override-toolbar-eyebrow">Batch Scope</p>
+            <div class="override-toolbar-title-row">
+              <strong>批量命名工具</strong>
+              <span class="override-selection-badge">已選 {{ selectedOverrideTenantIds.length }}</span>
+            </div>
+            <el-checkbox
+              :model-value="isAllOverrideTenantsSelected"
+              @change="(value: CheckboxValueType) => toggleSelectAllOverrideTenants(Boolean(value))"
+            >
+              全選租戶
+            </el-checkbox>
+            <p class="override-toolbar-hint">
+              勾選要處理的租戶後，再批量生成自訂名稱。生成後仍可逐行微調再儲存。
+            </p>
+          </section>
+
+          <section class="override-toolbar-panel override-toolbar-generator">
+            <p class="override-toolbar-eyebrow">AI Prompt</p>
+            <strong class="override-toolbar-panel-title">補充要求</strong>
+            <el-input
+              v-model="bulkNameGenerationInstruction"
+              class="override-bulk-input"
+              type="textarea"
+              :rows="3"
+              resize="none"
+              placeholder="例如：偏高端、簡潔、強調冰葡萄口味"
+            />
+            <div class="override-toolbar-actions">
+              <el-button
+                type="primary"
+                size="default"
+                :disabled="isGeneratingBulkCustomNames"
+                @click="bulkGenerateOverrideNamesForCurrentProduct"
+              >
+                {{ isGeneratingBulkCustomNames ? '生成中...' : '批量生成自訂商品名稱' }}
+              </el-button>
+            </div>
+          </section>
+
+          <div v-if="bulkCustomNameResultMessage" class="override-toolbar-result">
+            <div class="override-toolbar-result-head">
+              <strong>{{ bulkCustomNameResultMessage }}</strong>
+              <span>本次更新租戶</span>
+            </div>
+            <div v-if="bulkCustomNameResultTenants.length" class="override-result-tags">
+              <span
+                v-for="tenantName in bulkCustomNameResultTenants"
+                :key="tenantName"
+                class="override-result-tag"
+              >
+                {{ tenantName }}
+              </span>
             </div>
           </div>
         </div>
-      </article>
-    </div>
 
-    <div
-      v-if="isOverrideModalOpen && selectedProduct"
-      class="modal-overlay"
-      role="dialog"
-      aria-modal="true"
-      @click.self="closeOverrideModal"
+        <el-table :data="store.tenants" stripe style="width: 100%">
+          <el-table-column width="56">
+            <template #header>
+              <input
+                :checked="isAllOverrideTenantsSelected"
+                type="checkbox"
+                @change="toggleSelectAllOverrideTenants(($event.target as HTMLInputElement).checked)"
+              />
+            </template>
+            <template #default="{ row }">
+              <input
+                :checked="selectedOverrideTenantIds.includes(row.id)"
+                type="checkbox"
+                @change="toggleOverrideTenantSelection(row.id, ($event.target as HTMLInputElement).checked)"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="租戶" min-width="120">
+            <template #default="{ row }">
+              <strong>{{ row.name }}</strong>
+            </template>
+          </el-table-column>
+          <el-table-column label="域名" min-width="140">
+            <template #default="{ row }">
+              <span class="override-domain-cell">{{ row.domain || '未設定主域名' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="原商品名稱" min-width="160">
+            <template #default>
+              <strong class="override-original-name-cell">{{ selectedProduct.baseName }}</strong>
+            </template>
+          </el-table-column>
+          <el-table-column label="顯示" width="100">
+            <template #default="{ row }">
+              <el-switch
+                v-if="getOverrideForm(row.id)"
+                v-model="getOverrideForm(row.id)!.isVisible"
+                inline-prompt
+                active-text="顯示"
+                inactive-text="隱藏"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="自訂商品名稱" min-width="260">
+            <template #default="{ row }">
+              <el-input
+                v-if="getOverrideForm(row.id)"
+                v-model="getOverrideForm(row.id)!.customName"
+                type="textarea"
+                :autosize="{ minRows: 2, maxRows: 4 }"
+                resize="none"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="租戶售價" width="120">
+            <template #default="{ row }">
+              <el-input-number v-if="getOverrideForm(row.id)" v-model="getOverrideForm(row.id)!.customPrice" size="small" :min="0" :step="0.01" style="width: 100%" />
+            </template>
+          </el-table-column>
+          <el-table-column label="租戶庫存" width="120">
+            <template #default="{ row }">
+              <el-input-number v-if="getOverrideForm(row.id)" v-model="getOverrideForm(row.id)!.customStockQuantity" size="small" :min="0" style="width: 100%" />
+            </template>
+          </el-table-column>
+          <el-table-column label="SEO 標題" min-width="260">
+            <template #default="{ row }">
+              <el-input
+                v-if="getOverrideForm(row.id)"
+                v-model="getOverrideForm(row.id)!.seoTitle"
+                type="textarea"
+                :autosize="{ minRows: 2, maxRows: 4 }"
+                resize="none"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="SEO 描述" min-width="320">
+            <template #default="{ row }">
+              <el-input
+                v-if="getOverrideForm(row.id)"
+                v-model="getOverrideForm(row.id)!.seoDescription"
+                type="textarea"
+                :autosize="{ minRows: 3, maxRows: 6 }"
+                resize="none"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="100" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" type="primary" @click="saveOverride(row.id)">儲存</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <template #footer>
+        <el-button @click="closeOverrideModal">關閉</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="isProductModalOpen"
+      :title="isCreating ? '新增商品' : '修改商品'"
+      width="1120px"
+      :close-on-click-modal="false"
+      destroy-on-close
     >
-      <article class="modal-card override-modal-card">
-        <div class="card-heading modal-heading split">
-          <h3>租戶商品覆寫</h3>
-          <select v-model.number="selectedTenantId">
-            <option :value="0">請選擇租戶</option>
-            <option v-for="tenant in store.tenants" :key="tenant.id" :value="tenant.id">
-              {{ tenant.name }}
-            </option>
-          </select>
-        </div>
-
-        <div class="modal-body">
-          <div class="form-grid">
-            <label class="full">
-              <span>自訂商品名稱</span>
-              <input v-model="overrideForm.customName" />
-            </label>
-            <label class="full">
-              <span>自訂商品簡介</span>
-              <textarea v-model="overrideForm.customDescription" rows="4"></textarea>
-            </label>
-            <label>
-              <span>租戶售價</span>
-              <input v-model.number="overrideForm.customPrice" type="number" min="0" step="0.01" />
-            </label>
-            <label>
-              <span>租戶庫存</span>
-              <input v-model.number="overrideForm.customStockQuantity" type="number" min="0" />
-            </label>
-            <label class="full">
-              <span>SEO 標題</span>
-              <input v-model="overrideForm.seoTitle" />
-            </label>
-            <label class="full">
-              <span>SEO 描述</span>
-              <textarea v-model="overrideForm.seoDescription" rows="3"></textarea>
-            </label>
-          </div>
-          <label class="toggle">
-            <input v-model="overrideForm.isVisible" type="checkbox" />
-            <span>此租戶站點顯示這個商品</span>
-          </label>
-        </div>
-
-        <div class="actions modal-actions">
-          <button class="secondary" type="button" @click="closeOverrideModal">取消</button>
-          <button class="primary" type="button" :disabled="!selectedTenant || !selectedProduct" @click="saveOverride">
-            儲存租戶覆寫
-          </button>
-        </div>
-      </article>
-    </div>
-
-    <div
-      v-if="isProductModalOpen"
-      class="modal-overlay"
-      role="dialog"
-      aria-modal="true"
-      @click.self="closeProductModal"
-    >
-      <article class="modal-card">
-        <div class="card-heading modal-heading">
+      <template #header>
+        <div class="element-dialog-heading">
           <div>
             <h3>{{ isCreating ? '新增商品' : '修改商品' }}</h3>
             <small v-if="!isCreating">最後更新 {{ productForm.updatedAt || '尚未更新' }}</small>
           </div>
-          <button class="secondary" type="button" @click="closeProductModal">關閉</button>
         </div>
+      </template>
 
-        <div class="modal-body">
-          <div class="preview-grid">
-            <div class="main-preview">
-              <img :src="displayImage(productForm.previewImage)" :alt="productForm.baseName || 'product preview'" />
+      <div class="element-dialog-body">
+          <div class="edit-gallery-panel">
+            <div class="edit-gallery-head">
+              <strong>圖片預覽</strong>
+              <span>點擊圖片可放大，點按「設為主圖」可調整商品主圖。</span>
             </div>
+          <div class="preview-grid">
             <div class="gallery-preview">
               <div
                 v-for="(image, index) in productForm.gallery"
                 :key="`gallery-${image}-${index}`"
                 class="image-tile"
+                :class="{ active: image === productForm.previewImage }"
               >
-                <img
+                <el-image
+                  class="gallery-lightbox-image"
                   :src="displayImage(image)"
-                  :alt="`${productForm.baseName || 'product'}-gallery-${index}`"
-                />
+                  :preview-src-list="productForm.gallery.map(displayImage)"
+                  :initial-index="index"
+                  fit="cover"
+                  />
                 <div class="image-actions">
-                  <button class="secondary" type="button" @click="setPreviewImage(image)">設為主圖</button>
-                  <button class="ghost-danger" type="button" @click="removeGalleryImage(index)">移除</button>
+                  <el-button
+                    size="small"
+                    :disabled="image === productForm.previewImage"
+                    @click="setPreviewImage(image)"
+                  >
+                    {{ image === productForm.previewImage ? '目前主圖' : '設為主圖' }}
+                  </el-button>
+                  <el-button size="small" type="danger" plain @click="removeGalleryImage(index)">移除</el-button>
                 </div>
               </div>
             </div>
           </div>
-          <div class="preview-grid" v-if="productForm.detailImages && productForm.detailImages.length">
-            <h4>詳情圖預覽</h4>
-            <div class="detail-preview">
-              <div
-                v-for="(image, index) in productForm.detailImages"
-                :key="`detail-${image}-${index}`"
-                class="image-tile detail-tile"
-              >
-                <img
-                  :src="displayImage(image)"
-                  :alt="`${productForm.baseName || 'product'}-detail-${index}`"
-                />
-                <div class="image-actions">
-                  <button class="ghost-danger" type="button" @click="removeDetailImage(index)">移除</button>
+          </div>
+          <div class="element-form-grid">
+            <el-form label-width="100px">
+              <div class="element-form-grid two-columns">
+                <el-form-item label="SKU">
+                  <el-input v-model="productForm.sku" />
+                </el-form-item>
+                <el-form-item label="Slug">
+                  <el-input :model-value="productForm.slug || '儲存後自動產生'" readonly />
+                </el-form-item>
+                <el-form-item label="主分類">
+                  <el-select v-model="productForm.categoryId" style="width: 100%" @change="syncCategorySelection">
+                    <el-option :value="null" label="請選擇分類" />
+                    <el-option v-for="category in categoryTreeOptions" :key="category.id" :value="category.id" :label="category.label" />
+                  </el-select>
+                </el-form-item>
+            <div class="full category-panel">
+              <div class="category-panel-head">
+                <span>所属分类</span>
+                <small class="field-hint">主分类也必须属于这里。勾选多个分类后，前台会同时归档到这些分类下。</small>
+              </div>
+              <div class="category-panel-grid">
+                <div class="category-tree-picker">
+                  <el-tree
+                    ref="categoryTreeRef"
+                    :data="categoryTreeData"
+                    node-key="id"
+                    show-checkbox
+                    check-on-click-node
+                    default-expand-all
+                    :expand-on-click-node="false"
+                    @check="handleCategoryTreeCheck"
+                  >
+                    <template #default="{ data }">
+                      <div class="category-tree-node">
+                        <span>{{ data.label }}</span>
+                        <el-tag v-if="productForm.categoryId === data.id" size="small" effect="light" type="primary">主分类</el-tag>
+                      </div>
+                    </template>
+                  </el-tree>
+                </div>
+                <div class="category-selection-summary">
+                  <strong>已选分类</strong>
+                  <div v-if="selectedCategoryTagList.length" class="category-tag-list">
+                    <el-button
+                      v-for="item in selectedCategoryTagList"
+                      :key="`selected-category-${item.id}`"
+                      class="category-tag"
+                      size="small"
+                      :type="item.isPrimary ? 'primary' : 'info'"
+                      plain
+                      @click="removeProductCategory(item.id)"
+                    >
+                      {{ item.name }}
+                      {{ item.isPrimary ? ' · 主分类' : ' · 移除' }}
+                    </el-button>
+                  </div>
+                  <p v-else class="empty-selection-text">暂未选择任何分类。</p>
                 </div>
               </div>
             </div>
+                <el-form-item label="品牌">
+                  <el-select v-model="productForm.brandId" style="width: 100%" @change="syncBrandSelection">
+                    <el-option :value="null" label="請選擇品牌" />
+                    <el-option v-for="brand in brandOptions" :key="brand.id" :value="brand.id" :label="brand.name" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item class="full" label="基礎商品名稱">
+                  <el-input v-model="productForm.baseName" />
+                </el-form-item>
+                <el-form-item class="full" label="商品簡介">
+                  <el-input v-model="productForm.description" type="textarea" :rows="3" placeholder="顯示在商品卡片與詳情頁標題下方的摘要，支援 HTML" />
+                </el-form-item>
+                <el-form-item class="full" label="產品說明">
+                  <el-input v-model="productForm.longDescription" type="textarea" :rows="6" placeholder="顯示在前台商品詳情區塊，支援 HTML" />
+                </el-form-item>
+                <el-form-item class="full" label="產品規格">
+                  <el-input v-model="productForm.specificationHtml" type="textarea" :rows="6" placeholder="顯示在前台商品詳情頁常見問題上方，支援 HTML" />
+                </el-form-item>
+                <el-form-item label="基礎價格">
+                  <el-input-number v-model="productForm.basePrice" :min="0" :step="0.01" style="width: 100%" />
+                </el-form-item>
+                <el-form-item label="基礎庫存">
+                  <el-input-number v-model="productForm.baseStockQuantity" :min="0" style="width: 100%" />
+                </el-form-item>
+                <el-form-item class="full" label="主圖 URL">
+                  <el-input v-model="productForm.previewImage" />
+                </el-form-item>
+                <el-form-item class="full" label="圖庫 URL（每行一張）">
+                  <el-input v-model="galleryInput" type="textarea" :rows="4" @change="syncGalleryFromInput" />
+                  <input type="file" multiple accept="image/*" @change="uploadGalleryImages" />
+                </el-form-item>
+                <el-form-item class="full" label="組合 SKU">
+                  <el-input
+                    v-model="skuVariantInput"
+                    type="textarea"
+                    :rows="5"
+                    placeholder="例如&#10;口味:冰葡萄; 盒裝:2入|POD-GRAPE-2|299|12&#10;口味:冰葡萄; 盒裝:4入|POD-GRAPE-4|499|8&#10;&#10;規格群組會依這裡的組合自動推導"
+                    @change="syncVariantConfigFromInput"
+                  />
+              <div v-if="productForm.skuVariants?.length" class="sku-variant-preview">
+                <div class="sku-variant-preview-head">
+                  <strong>目前組合 SKU 配置</strong>
+                  <span>{{ productForm.skuVariants.length }} 組</span>
+                </div>
+                <div class="sku-variant-table">
+                  <div class="sku-variant-row sku-variant-row-head">
+                    <span>規格組合</span>
+                    <span>SKU</span>
+                    <span>價格</span>
+                    <span>庫存</span>
+                  </div>
+                  <div
+                    v-for="(variant, index) in productForm.skuVariants"
+                    :key="`${variant.sku}-${index}`"
+                    class="sku-variant-row"
+                  >
+                    <span>{{ Object.entries(variant.selections).map(([key, value]) => `${key}: ${value}`).join(' / ') }}</span>
+                    <span>{{ variant.sku }}</span>
+                    <span>{{ variant.price ?? '—' }}</span>
+                    <span>{{ variant.stock ?? '—' }}</span>
+                  </div>
+                </div>
+              </div>
+                </el-form-item>
+                <el-form-item class="full" label="狀態">
+                  <el-select v-model="productForm.status" style="width: 100%">
+                    <el-option value="上架中" label="上架中" />
+                    <el-option value="草稿" label="草稿" />
+                    <el-option value="缺貨" label="缺貨" />
+                  </el-select>
+                </el-form-item>
+              </div>
+            </el-form>
           </div>
 
-          <div class="form-grid">
-            <label>
-              <span>SKU</span>
-              <input v-model="productForm.sku" />
-            </label>
-            <label>
-              <span>Slug</span>
-              <input :value="productForm.slug || '儲存後自動產生'" readonly />
-            </label>
-            <label>
-              <span>分類</span>
-              <select v-model="productForm.categoryId" @change="syncCategorySelection">
-                <option :value="null">請選擇分類</option>
-                <option v-for="category in categoryOptions" :key="category.id" :value="category.id">
-                  {{ category.name }}
-                </option>
-              </select>
-            </label>
-            <label>
-              <span>品牌</span>
-              <select v-model="productForm.brandId" @change="syncBrandSelection">
-                <option :value="null">請選擇品牌</option>
-                <option v-for="brand in brandOptions" :key="brand.id" :value="brand.id">
-                  {{ brand.name }}
-                </option>
-              </select>
-            </label>
-            <label class="full">
-              <span>基礎商品名稱</span>
-              <input v-model="productForm.baseName" />
-            </label>
-            <label class="full">
-              <span>商品簡介</span>
-              <textarea
-                v-model="productForm.description"
-                rows="3"
-                placeholder="顯示在商品卡片與詳情頁標題下方的摘要"
-              ></textarea>
-            </label>
-            <label class="full">
-              <span>商品說明</span>
-              <textarea
-                v-model="productForm.longDescription"
-                rows="6"
-                placeholder="顯示在前台商品詳情區塊，支援多行內容"
-              ></textarea>
-            </label>
-            <label>
-              <span>基礎價格</span>
-              <input v-model.number="productForm.basePrice" type="number" min="0" step="0.01" />
-            </label>
-            <label>
-              <span>基礎庫存</span>
-              <input v-model.number="productForm.baseStockQuantity" type="number" min="0" />
-            </label>
-            <label class="full">
-              <span>主圖 URL</span>
-              <input v-model="productForm.previewImage" />
-            </label>
-            <label class="full">
-              <span>圖庫 URL（每行一張）</span>
-              <textarea v-model="galleryInput" rows="4" @change="syncGalleryFromInput"></textarea>
-              <input type="file" multiple accept="image/*" @change="uploadGalleryImages" />
-            </label>
-            <label class="full">
-              <span>詳情圖 URL（每行一張）</span>
-              <textarea v-model="detailImagesInput" rows="4" @change="syncDetailImagesFromInput"></textarea>
-              <input type="file" multiple accept="image/*" @change="uploadDetailImages" />
-            </label>
-            <label class="full">
-              <span>組合 SKU（每行：群組:值; 群組:值 | SKU | 價格 | 庫存）</span>
-              <textarea
-                v-model="skuVariantInput"
-                rows="5"
-                placeholder="例如&#10;口味:冰葡萄; 盒裝:2入|POD-GRAPE-2|299|12&#10;口味:冰葡萄; 盒裝:4入|POD-GRAPE-4|499|8&#10;&#10;規格群組會依這裡的組合自動推導"
-                @change="syncVariantConfigFromInput"
-              ></textarea>
-            </label>
-            <label class="full">
-              <span>狀態</span>
-              <select v-model="productForm.status">
-                <option value="上架中">上架中</option>
-                <option value="草稿">草稿</option>
-                <option value="缺貨">缺貨</option>
-              </select>
-            </label>
-          </div>
-        </div>
+      </div>
 
-        <div class="actions modal-actions">
-          <button v-if="!isCreating" class="danger" type="button" @click="removeProduct">刪除商品</button>
+      <template #footer>
+        <div class="element-dialog-footer">
+          <el-button v-if="!isCreating" type="danger" @click="removeProduct">刪除商品</el-button>
           <div class="action-group">
-            <button class="secondary" type="button" @click="closeProductModal">取消</button>
-            <button class="primary" type="button" @click="saveProduct">{{ isCreating ? '建立商品' : '儲存全域商品' }}</button>
+            <el-button @click="closeProductModal">取消</el-button>
+            <el-button type="primary" @click="saveProduct">{{ isCreating ? '建立商品' : '儲存全域商品' }}</el-button>
           </div>
         </div>
-      </article>
-    </div>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
 <style scoped>
 .products-page {
   display: grid;
-  gap: 0.875rem;
+  gap: 1rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
-.page-heading {
+.element-page-heading {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 1rem;
+  padding: 0.2rem 0 0.1rem;
 }
 
 .label {
@@ -1109,144 +1870,182 @@ watch(
 }
 
 .metrics-grid {
-  display: grid;
-  gap: 0.75rem;
-  grid-template-columns: repeat(3, 1fr);
+  margin-bottom: 0.1rem;
 }
 
-.metric-card,
-.table-card,
-.editor-card,
-.modal-card {
-  background: #fff;
-  border: 1px solid var(--wp-border);
-  border-radius: 0.5rem;
-  box-shadow: var(--wp-shadow);
+.metrics-grid :deep(.el-card) {
+  border-radius: 16px;
+  border-color: #e5e7eb;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
 }
 
-.metric-card {
-  padding: 0.8rem 1rem;
-}
-
-.metric-card p {
+.metric-label {
   color: var(--wp-text-muted);
+  margin: 0;
+  font-size: 0.82rem;
 }
 
-.metric-card strong {
+.metric-value {
   display: block;
-  margin-top: 0.25rem;
-  font-size: 1.3rem;
+  margin-top: 0.3rem;
+  font-size: 1.45rem;
+  line-height: 1.1;
 }
 
 .workspace-grid {
   display: block;
-}
-
-.table-card {
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
 }
 
-.table-toolbar,
-.editor-card,
-.modal-card {
-  padding: 0.85rem 1rem;
+.table-card {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border-radius: 18px;
+  border-color: #e5e7eb;
+  overflow: hidden;
+}
+
+.workspace-grid > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.table-card :deep(.el-card__header) {
+  padding: 1rem 1.1rem 0.85rem;
+  border-bottom: 1px solid #edf0f3;
+  background: linear-gradient(180deg, #fcfdff 0%, #f8fafc 100%);
+}
+
+.table-card :deep(.el-card__body) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 1rem 1.1rem 1.1rem;
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.card-header .title {
+  display: block;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #111827;
+}
+
+.card-header small {
+  display: block;
+  margin-top: 0.22rem;
+  color: var(--wp-text-muted);
+  font-size: 0.78rem;
+}
+
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.toolbar-field {
+  width: 160px;
+  min-width: 0;
+}
+
+.toolbar-field-wide {
+  width: 210px;
+}
+
+.toolbar-search-field {
+  width: 220px;
+  min-width: 0;
 }
 
 .table-toolbar {
   display: grid;
-  gap: 0.75rem;
-}
-
-.table-scroller {
-  overflow-x: auto;
+  gap: 0.9rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .bulk-toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.7rem;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
 }
 
-.bulk-select-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-
-.bulk-select-all input {
-  width: auto;
-  min-height: auto;
-}
-
-.bulk-count {
-  color: var(--wp-text-muted);
-  font-size: 0.875rem;
-  margin-right: 0.25rem;
-}
-
-.bulk-status-group {
+.bulk-meta-group {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-}
-
-.bulk-status-select {
-  width: auto;
-  min-width: 132px;
-}
-
-.product-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 860px;
-}
-
-.product-table th,
-.product-table td {
-  padding: 0.8rem 0.85rem;
-  border-top: 1px solid var(--wp-border);
-  text-align: left;
-  vertical-align: middle;
-}
-
-.product-table th {
-  color: var(--wp-text-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  background: #f8fafc;
-}
-
-.product-table tbody tr {
-  cursor: pointer;
-  transition: background-color 0.18s ease;
-}
-
-.product-table tbody tr:hover {
+  min-height: 2.2rem;
+  padding: 0 0.85rem;
+  border: 1px solid #dbe2ea;
+  border-radius: 999px;
   background: #f8fbff;
+  color: #4b5563;
+  font-size: 0.82rem;
 }
 
-.product-table tbody tr.selected {
-  background: #f0f6fc;
+.bulk-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: #2271b1;
+  color: #fff;
+  font-size: 0.78rem;
+  line-height: 1;
 }
 
-.product-table tbody tr.checked {
-  box-shadow: inset 3px 0 0 var(--wp-blue);
+.filter-summary {
+  display: flex;
+  align-items: center;
+  min-height: 2.2rem;
+  padding: 0 0.85rem;
+  border: 1px dashed #d6dde5;
+  border-radius: 999px;
+  background: #fafcff;
+  flex: 1 1 260px;
+  color: var(--wp-text-muted);
+  font-size: 0.8rem;
 }
 
-.checkbox-col {
-  width: 48px;
+.bulk-status-field {
+  width: 140px;
+  min-width: 0;
 }
 
-.action-col {
-  width: 280px;
+.product-table-shell {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
-.checkbox-col input {
-  width: auto;
-  min-height: auto;
+.product-admin-table {
+  width: 100%;
+  min-width: 1180px;
 }
 
 .product-cell {
@@ -1284,32 +2083,48 @@ watch(
   -webkit-box-orient: vertical;
 }
 
-.status-pill {
+.category-cell {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.category-cell strong {
+  font-size: 0.88rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.category-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+}
+
+.category-chip {
   display: inline-flex;
   align-items: center;
-  min-height: 1.7rem;
-  padding: 0 0.55rem;
+  min-height: 1.35rem;
+  padding: 0.1rem 0.42rem;
   border-radius: 999px;
-  background: #eef3f7;
-  color: var(--wp-text);
-  font-weight: 700;
-  font-size: 0.75rem;
-}
-
-.meta-stack {
-  display: grid;
-  gap: 0.15rem;
-}
-
-.meta-stack small {
+  background: #f3f5f6;
   color: var(--wp-text-muted);
+  font-size: 0.72rem;
+  line-height: 1.1;
 }
 
 .slug-cell {
   max-width: 220px;
   color: var(--wp-text-muted);
   font-size: 0.82rem;
-  word-break: break-word;
+}
+
+.slug-text {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .row-actions {
@@ -1319,33 +2134,72 @@ watch(
   flex-wrap: wrap;
 }
 
-.table-toolbar-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
+.table-card :deep(.el-table) {
+  --el-table-border-color: #edf0f3;
+  --el-table-header-bg-color: #f8fafc;
+  --el-table-row-hover-bg-color: #f8fbff;
+  border-radius: 12px;
+  overflow: hidden;
 }
 
-.card-heading {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  align-items: center;
-  margin-bottom: 0.75rem;
+.table-card :deep(.el-table th.el-table__cell) {
+  background: #f8fafc;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
-.card-heading h3 {
+.table-card :deep(.el-table td.el-table__cell) {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+.table-card :deep(.el-table .cell) {
+  min-width: 0;
+}
+
+.table-card :deep(.el-input__wrapper),
+.table-card :deep(.el-select__wrapper),
+.table-card :deep(.el-button) {
+  border-radius: 10px;
+}
+
+.table-card :deep(.el-table .cell) {
+  min-width: 0;
+}
+
+.element-dialog-heading h3 {
   margin: 0;
 }
 
-.card-heading small {
+.element-dialog-heading small {
+  display: block;
+  margin-top: 0.2rem;
   color: var(--wp-text-muted);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
 }
 
-.card-heading.split select {
-  min-width: 220px;
+.element-dialog-body {
+  display: grid;
+  gap: 1rem;
+}
+
+.element-form-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.element-form-grid.two-columns {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.element-dialog-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
 }
 
 .preview-copy-grid {
@@ -1356,10 +2210,6 @@ watch(
 .preview-copy-block {
   display: grid;
   gap: 0.45rem;
-}
-
-.preview-copy-block h4 {
-  margin: 0;
 }
 
 .overview-title small,
@@ -1406,6 +2256,30 @@ watch(
   margin-bottom: 0.75rem;
 }
 
+.edit-gallery-panel {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fcfdff 0%, #f8fafc 100%);
+}
+
+.edit-gallery-head {
+  display: grid;
+  gap: 0.22rem;
+}
+
+.edit-gallery-head strong {
+  font-size: 0.92rem;
+  color: #111827;
+}
+
+.edit-gallery-head span {
+  color: var(--wp-text-muted);
+  font-size: 0.78rem;
+}
+
 .main-preview {
   border: 1px solid var(--wp-border);
   border-radius: 0.75rem;
@@ -1419,17 +2293,22 @@ watch(
   object-fit: cover;
 }
 
+.main-preview :deep(.el-image) {
+  display: block;
+  width: 100%;
+  height: 180px;
+}
+
 .gallery-preview {
   display: grid;
   gap: 0.5rem;
   grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
 }
 
-.gallery-preview img,
+.gallery-preview :deep(.el-image),
 .detail-preview img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
   border-radius: 0.5rem;
   border: 1px solid var(--wp-border);
   background: #fff;
@@ -1445,12 +2324,17 @@ watch(
   gap: 0.4rem;
 }
 
-.image-tile img {
-  min-height: 64px;
+.image-tile.active img {
+  border-color: var(--wp-blue);
+  box-shadow: 0 0 0 2px rgba(34, 113, 177, 0.14);
 }
 
-.detail-tile img {
-  min-height: 140px;
+.gallery-lightbox-image :deep(.el-image__inner),
+.gallery-preview :deep(.el-image__inner) {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  object-fit: cover;
 }
 
 .image-actions {
@@ -1458,60 +2342,217 @@ watch(
   gap: 0.4rem;
 }
 
-.form-grid {
-  display: grid;
-  gap: 0.7rem;
-  grid-template-columns: repeat(2, 1fr);
+.field-hint {
+  color: var(--wp-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
 }
 
-label {
+.category-panel {
   display: grid;
-  gap: 0.3rem;
+  gap: 0.55rem;
+  padding: 0.75rem;
+  border: 1px solid var(--wp-border);
+  border-radius: 0.6rem;
+  background: var(--wp-surface-soft);
 }
 
-label span {
+.category-panel-head {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.category-panel-head span {
   font-weight: 600;
   font-size: 0.84rem;
 }
 
-.full {
-  grid-column: 1 / -1;
+.category-panel-grid {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: minmax(0, 1.8fr) minmax(220px, 0.9fr);
 }
 
-input,
-select,
-textarea {
-  width: 100%;
-  min-height: 2.2rem;
-  padding: 0.52rem 0.65rem;
-  border: 1px solid var(--wp-border-strong);
-  border-radius: 0.375rem;
+.category-tree-picker,
+.category-selection-summary {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border: 1px solid var(--wp-border);
+  border-radius: 0.55rem;
   background: #fff;
-  font-size: 0.92rem;
 }
 
-textarea {
-  min-height: auto;
-  resize: vertical;
+.category-tree-picker {
+  height: 232px;
+  overflow-y: auto;
 }
 
-.toggle {
+.category-tree-picker :deep(.el-tree) {
+  background: transparent;
+}
+
+.category-tree-picker :deep(.el-tree-node__content) {
+  min-height: 34px;
+  border-radius: 8px;
+}
+
+.category-tree-picker :deep(.el-tree-node__content:hover) {
+  background: #f8fbff;
+}
+
+.category-tree-node {
   display: flex;
-  gap: 0.5rem;
   align-items: center;
-  margin-top: 0.75rem;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  min-width: 0;
 }
 
-.toggle input {
+.category-selection-summary {
+  align-content: start;
+  min-height: 232px;
+}
+
+.category-check-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.8rem;
+  padding: 0.22rem 0.3rem;
+  border-radius: 0.45rem;
+}
+
+.category-check-row:hover {
+  background: #f8fbff;
+}
+
+.category-check-row.primary {
+  background: #eef6ff;
+}
+
+.category-check-row input {
   width: auto;
   min-height: auto;
+  margin: 0;
 }
 
-.actions {
+.picker-guides {
+  flex: 0 0 auto;
+}
+
+.category-check-name {
+  min-width: 0;
+  font-size: 0.84rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.primary-badge {
+  margin-left: auto;
+  padding: 0.08rem 0.35rem;
+  border-radius: 999px;
+  background: rgba(34, 113, 177, 0.12);
+  color: var(--wp-blue);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.category-selection-summary strong {
+  font-size: 0.84rem;
+}
+
+.category-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-content: start;
+}
+
+.category-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  min-height: 1.6rem;
+  padding: 0.18rem 0.45rem;
+  border: 1px solid var(--wp-border);
+  border-radius: 0.8rem;
+  background: #fff;
+  color: var(--wp-text);
+  font-size: 0.76rem;
+  line-height: 1.2;
+}
+
+.category-tag.primary {
+  border-color: rgba(34, 113, 177, 0.3);
+  background: #eef6ff;
+  color: var(--wp-blue);
+}
+
+.category-tag span {
+  color: var(--wp-text-muted);
+  font-size: 0.68rem;
+}
+
+.empty-selection-text {
+  color: var(--wp-text-muted);
+  font-size: 0.78rem;
+}
+
+.sku-variant-preview {
+  display: grid;
+  gap: 0.625rem;
+  margin-top: 0.5rem;
+  padding: 0.85rem;
+  border: 1px solid var(--wp-border);
+  border-radius: 0.5rem;
+  background: var(--wp-surface-soft);
+}
+
+.sku-variant-preview-head {
   display: flex;
   justify-content: space-between;
-  gap: 0.625rem;
-  margin-top: 0.75rem;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.sku-variant-preview-head strong {
+  font-size: 0.9rem;
+}
+
+.sku-variant-preview-head span {
+  color: var(--wp-text-muted);
+  font-size: 0.8rem;
+}
+
+.sku-variant-table {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.sku-variant-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(120px, 1.2fr) 88px 88px;
+  gap: 0.6rem;
+  align-items: start;
+  padding: 0.5rem 0.6rem;
+  border-radius: 0.4rem;
+  background: #fff;
+  font-size: 0.84rem;
+}
+
+.sku-variant-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sku-variant-row-head {
+  background: transparent;
+  padding: 0;
+  color: var(--wp-text-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
 }
 
 .action-group {
@@ -1519,97 +2560,244 @@ textarea {
   gap: 0.625rem;
 }
 
-.primary,
-.danger,
-.secondary,
-.ghost-danger {
-  min-height: 2.15rem;
-  padding: 0.5rem 0.8rem;
-  border-radius: 0.375rem;
-  font-weight: 600;
-  border: 1px solid transparent;
-  font-size: 0.88rem;
-}
-
-.primary {
-  background: var(--wp-blue);
-  color: #fff;
-  border-color: var(--wp-blue);
-}
-
-.danger {
-  background: #fff;
-  color: var(--wp-red);
-  border-color: rgba(214, 54, 56, 0.3);
-}
-
-.secondary {
-  background: #fff;
-  color: var(--wp-blue);
-  border-color: rgba(34, 113, 177, 0.24);
-}
-
-.ghost-danger {
-  background: #fff7f7;
-  color: var(--wp-red);
-  border-color: rgba(214, 54, 56, 0.18);
-}
-
-.small-button {
-  min-height: 1.95rem;
-  padding: 0.35rem 0.65rem;
-}
-
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: grid;
-  place-items: center;
-  padding: 1.5rem;
-  overflow-y: auto;
-  background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(2px);
-}
-
-.modal-card {
-  width: min(1080px, 100%);
-  height: min(calc(100vh - 3rem), 100%);
-  max-height: calc(100vh - 3rem);
-  overflow: hidden;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 0;
-}
-
-.preview-modal-card {
-  width: min(960px, 100%);
-}
-
-.override-modal-card {
-  width: min(760px, 100%);
-  height: auto;
-  max-height: min(calc(100vh - 3rem), 820px);
-}
-
-.modal-heading {
-  margin-bottom: 0;
-  padding-bottom: 0.85rem;
-  border-bottom: 1px solid var(--wp-border);
-}
-
-.modal-body {
-  min-height: 0;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-  overscroll-behavior: contain;
-  padding-top: 0.85rem;
-}
-
-.modal-actions {
+.override-selection-meta {
+  display: inline-flex;
   align-items: center;
-  padding-top: 0.85rem;
-  border-top: 1px solid var(--wp-border);
+  gap: 0.55rem;
+  color: var(--wp-text-muted);
+  font-size: 0.78rem;
+}
+
+.override-selection-meta strong {
+  color: var(--wp-text);
+  font-size: 0.8rem;
+}
+
+.override-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.override-select-all input,
+.override-bulk-input {
+  flex: 1 1 260px;
+  min-width: 220px;
+  min-height: 2.2rem;
+}
+
+.override-table-wrap {
+  overflow-x: auto;
+}
+
+.override-table {
+  width: 100%;
+  min-width: 1080px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.override-table th,
+.override-table td {
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid var(--wp-border);
+  vertical-align: top;
+  background: #fff;
+}
+
+.override-checkbox-col {
+  width: 40px;
+  text-align: center;
+}
+
+.override-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  color: var(--wp-text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: #f8fafc;
+  white-space: nowrap;
+}
+
+.override-table tr:last-child td {
+  border-bottom: none;
+}
+
+.override-tenant-cell strong {
+  display: block;
+  min-width: 104px;
+  color: var(--wp-text);
+  font-size: 0.84rem;
+  line-height: 1.25;
+}
+
+.override-domain-cell {
+  min-width: 130px;
+  max-width: 150px;
+  color: var(--wp-text-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.override-original-name-cell {
+  min-width: 150px;
+  max-width: 190px;
+}
+
+.override-original-name-cell strong {
+  display: block;
+  color: var(--wp-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.override-toolbar {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.95fr) minmax(360px, 1.25fr);
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid #dbe5ef;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(34, 113, 177, 0.08), transparent 28%),
+    linear-gradient(180deg, #fcfdff 0%, #f7fafc 100%);
+}
+
+.override-toolbar-copy {
+  display: grid;
+  gap: 0.6rem;
+  align-content: start;
+  padding: 0.9rem 0.95rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.override-toolbar-hint {
+  margin: 0;
+  color: var(--wp-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.override-toolbar-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.9rem 0.95rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.override-toolbar-result {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid rgba(10, 92, 54, 0.16);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f3fbf5 0%, #eef9f2 100%);
+  color: #0a5c36;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.override-toolbar-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.override-toolbar-result-head strong {
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.override-toolbar-result-head span {
+  color: rgba(10, 92, 54, 0.72);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.override-result-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.override-result-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.65rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(10, 92, 54, 0.1);
+  color: #0a5c36;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.element-dialog-body :deep(.el-table) {
+  --el-table-border-color: #edf0f3;
+  --el-table-header-bg-color: #f8fafc;
+  --el-table-row-hover-bg-color: #f8fbff;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.element-dialog-body :deep(.el-table th.el-table__cell) {
+  background: #f8fafc;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.element-dialog-body :deep(.el-table td.el-table__cell) {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.element-dialog-body :deep(.el-dialog__body),
+.element-dialog-body :deep(.el-input__wrapper),
+.element-dialog-body :deep(.el-textarea__inner),
+.element-dialog-body :deep(.el-select__wrapper),
+.element-dialog-body :deep(.el-input-number),
+.element-dialog-body :deep(.el-button) {
+  border-radius: 10px;
+}
+
+:deep(.el-dialog) {
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+:deep(.el-dialog__header) {
+  margin-right: 0;
+  padding: 1rem 1.1rem 0.9rem;
+  border-bottom: 1px solid #edf0f3;
+  background: linear-gradient(180deg, #fcfdff 0%, #f8fafc 100%);
+}
+
+:deep(.el-dialog__body) {
+  padding: 1rem 1.1rem 1rem;
+}
+
+:deep(.el-dialog__footer) {
+  padding: 0.9rem 1.1rem 1rem;
+  border-top: 1px solid #edf0f3;
+  background: #fff;
 }
 
 @media (max-width: 1100px) {
@@ -1619,12 +2807,27 @@ textarea {
 }
 
 @media (max-width: 780px) {
-  .page-heading {
+  .element-page-heading,
+  .card-header,
+  .toolbar-actions,
+  .element-dialog-footer {
     flex-direction: column;
   }
 
+  .toolbar-field,
+  .toolbar-field-wide,
+  .toolbar-search-field,
+  .bulk-status-field {
+    width: 100%;
+  }
+
+  .bulk-toolbar,
+  .filter-summary {
+    width: 100%;
+  }
+
   .metrics-grid,
-  .form-grid {
+  .element-form-grid.two-columns {
     grid-template-columns: 1fr;
   }
 
@@ -1632,23 +2835,23 @@ textarea {
     grid-template-columns: 1fr;
   }
 
-  .actions,
-  .modal-actions {
-    flex-direction: column;
-  }
-
   .action-group {
     width: 100%;
     flex-direction: column;
   }
 
-  .modal-overlay {
-    padding: 0.75rem;
+  .category-panel-grid {
+    grid-template-columns: 1fr;
   }
 
-  .modal-card {
-    height: min(calc(100vh - 1.5rem), 100%);
-    max-height: calc(100vh - 1.5rem);
+  .override-toolbar,
+  .override-toolbar-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .override-toolbar-result-head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 </style>

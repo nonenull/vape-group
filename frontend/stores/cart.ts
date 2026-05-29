@@ -20,6 +20,7 @@ export const useCartStore = defineStore('cart', {
   state: () => ({
     items: [] as CartItem[],
     hydrated: false,
+    showCartShortcut: false,
   }),
   getters: {
     itemCount: (state) => state.items.reduce((sum, item) => sum + item.quantity, 0),
@@ -55,6 +56,7 @@ export const useCartStore = defineStore('cart', {
       const existing = this.items.find((item) => item.productId === product.id && item.variantSku === resolvedSku)
       if (existing) {
         existing.quantity += 1
+        this.showCartShortcut = true
         this.persist()
         return
       }
@@ -71,6 +73,7 @@ export const useCartStore = defineStore('cart', {
         quantity: 1,
         image: product.image,
       })
+      this.showCartShortcut = true
       this.persist()
     },
     updateQuantity(cartItemId: number, quantity: number) {
@@ -87,14 +90,66 @@ export const useCartStore = defineStore('cart', {
       item.quantity = quantity
       this.persist()
     },
+    updateVariant(
+      cartItemId: number,
+      payload: {
+        sku: string
+        variantLabel: string
+        variantStock: number | null
+        price: number
+      },
+    ) {
+      this.hydrate()
+      const item = this.items.find((entry) => entry.id === cartItemId)
+      if (!item) {
+        return
+      }
+
+      const targetSku = payload.sku.trim()
+      if (!targetSku) {
+        return
+      }
+
+      const duplicate = this.items.find((entry) =>
+        entry.id !== cartItemId &&
+        entry.productId === item.productId &&
+        entry.variantSku === targetSku,
+      )
+
+      if (duplicate) {
+        duplicate.quantity += item.quantity
+        duplicate.price = payload.price
+        duplicate.variantLabel = payload.variantLabel
+        duplicate.variantSku = targetSku
+        duplicate.sku = targetSku
+        duplicate.variantStock = payload.variantStock
+        this.items = this.items.filter((entry) => entry.id !== cartItemId)
+        this.persist()
+        return
+      }
+
+      item.sku = targetSku
+      item.variantSku = targetSku
+      item.variantLabel = payload.variantLabel
+      item.variantStock = payload.variantStock
+      item.price = payload.price
+      this.persist()
+    },
     removeItem(cartItemId: number) {
       this.hydrate()
       this.items = this.items.filter((entry) => entry.id !== cartItemId)
+      if (!this.items.length) {
+        this.showCartShortcut = false
+      }
       this.persist()
     },
     clearCart() {
       this.items = []
+      this.showCartShortcut = false
       this.persist()
+    },
+    hideCartShortcut() {
+      this.showCartShortcut = false
     },
   },
 })

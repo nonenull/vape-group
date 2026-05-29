@@ -3,12 +3,20 @@ import { computed, reactive, ref } from 'vue'
 import { useStoreSeo } from '~/composables/useStoreSeo'
 import { createOrder } from '~/composables/useStoreApi'
 import { useCheckoutStore } from '~/stores/checkout'
+import { useTenantStore } from '~/stores/tenant'
 
 const router = useRouter()
 const checkoutStore = useCheckoutStore()
+const tenantStore = useTenantStore()
 checkoutStore.hydrate()
 
-const shippingFee = computed(() => (checkoutStore.subtotal >= 1200 || !checkoutStore.directItem ? 0 : 90))
+await tenantStore.initTenant()
+
+const shippingFee = computed(() => {
+  const threshold = tenantStore.platformConfig.freeShippingThreshold || 0
+  const fee = tenantStore.platformConfig.shippingFee || 0
+  return checkoutStore.subtotal >= threshold || !checkoutStore.directItem ? 0 : fee
+})
 const finalTotal = computed(() => checkoutStore.subtotal + shippingFee.value)
 const checkoutForm = reactive({
   lineId: '',
@@ -52,6 +60,7 @@ const checkout = async () => {
   submitting.value = true
   try {
     const item = checkoutStore.directItem
+    const paymentMethod = checkoutForm.paymentMethod
     const order = await createOrder({
       items: [{
         product_id: item.productId,
@@ -63,7 +72,7 @@ const checkout = async () => {
       phone: checkoutForm.phone.trim(),
       convenience_store: checkoutForm.convenienceStore.trim(),
       shipping_address: checkoutForm.shippingAddress.trim(),
-      payment_method: checkoutForm.paymentMethod,
+      payment_method: paymentMethod,
     })
 
     orderSuccess.value = {
@@ -75,6 +84,14 @@ const checkout = async () => {
     checkoutForm.phone = ''
     checkoutForm.convenienceStore = ''
     checkoutForm.shippingAddress = ''
+    await router.push({
+      path: '/order-success',
+      query: {
+        id: String(order.id),
+        total: String(order.total_amount),
+        payment: paymentMethod,
+      },
+    })
   } catch (error) {
     console.error('建立直接下單訂單失敗:', error)
     window.alert('送出訂單失敗，請稍後再試')
@@ -169,10 +186,7 @@ const goBackToProduct = async () => {
         </label>
         <label class="checkout-field">
           <span>付款方式</span>
-          <select v-model="checkoutForm.paymentMethod">
-            <option value="cash_on_delivery">貨到付款</option>
-            <option value="bank_transfer">銀行轉帳</option>
-          </select>
+          <div class="checkout-fixed-value">7-11 貨到付款</div>
         </label>
         <button class="primary" type="button" :disabled="submitting" @click="checkout">
           {{ submitting ? '送出中...' : '送出訂單' }}
@@ -274,6 +288,14 @@ const goBackToProduct = async () => {
   border-radius: 0.5rem;
   border: 1px solid var(--wp-border);
   background: #fff;
+  padding: 0.8rem 0.9rem;
+}
+
+.checkout-fixed-value {
+  border-radius: 0.5rem;
+  border: 1px solid var(--wp-border);
+  background: var(--wp-surface-soft);
+  color: var(--wp-text);
   padding: 0.8rem 0.9rem;
 }
 

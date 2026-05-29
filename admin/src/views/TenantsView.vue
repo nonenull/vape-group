@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { Delete, Edit, Plus, View } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { adminAPI } from '@/api/admin'
 import { useAdminStore } from '@/stores/admin'
-import type { TenantRecord } from '@/data/adminMock'
+import type { DomainRecord, TenantRecord } from '@/data/adminMock'
 
 const store = useAdminStore()
 const brands = computed(() => store.getBrands())
+const domains = ref<DomainRecord[]>([])
 
 const emptyTenant = (): TenantRecord => ({
   id: 0,
@@ -35,8 +39,11 @@ const emptyTenant = (): TenantRecord => ({
 const selectedTenantId = ref(store.tenants[0]?.id ?? 0)
 const tenantForm = ref<TenantRecord>(store.tenants[0] ? { ...store.tenants[0] } : emptyTenant())
 const isCreating = ref(false)
+const isTenantModalOpen = ref(false)
+const isViewMode = ref(false)
 const boundDomainsInput = ref('')
 const isSaving = ref(false)
+const selectedTenantIds = ref<number[]>([])
 
 const themePresets = [
   {
@@ -90,7 +97,7 @@ const themePresets = [
     tagBgColor: '#eaf5ed',
     primaryBrandId: null,
   },
-]
+] as const
 
 const moduleLabels: Record<string, string> = {
   categories: '热门分类',
@@ -100,12 +107,34 @@ const moduleLabels: Record<string, string> = {
 
 const selectedTenant = computed(() => store.tenants.find((item) => item.id === selectedTenantId.value) ?? null)
 
+const availablePrimaryDomains = computed(() => {
+  const currentTenantId = tenantForm.value.id
+  const usedByOthers = new Set(
+    store.tenants
+      .filter((tenant) => tenant.id !== currentTenantId)
+      .map((tenant) => tenant.domain.trim().toLowerCase())
+      .filter(Boolean),
+  )
+  return domains.value.filter((domain) => !usedByOthers.has(domain.domainName.trim().toLowerCase()))
+})
+
+const availableBoundDomains = computed(() => {
+  const currentTenantId = tenantForm.value.id
+  const usedByOthers = new Set<string>()
+  for (const tenant of store.tenants) {
+    if (tenant.id === currentTenantId) continue
+    if (tenant.domain.trim()) usedByOthers.add(tenant.domain.trim().toLowerCase())
+    for (const bound of tenant.boundDomains) {
+      if (bound.trim()) usedByOthers.add(bound.trim().toLowerCase())
+    }
+  }
+  return domains.value.filter((domain) => !usedByOthers.has(domain.domainName.trim().toLowerCase()))
+})
+
 watch(
   selectedTenantId,
   (tenantId) => {
-    if (isCreating.value) {
-      return
-    }
+    if (isCreating.value) return
     const tenant = store.tenants.find((item) => item.id === tenantId)
     if (tenant) {
       tenantForm.value = { ...tenant, boundDomains: [...tenant.boundDomains] }
@@ -117,23 +146,77 @@ watch(
 
 function startCreateTenant() {
   isCreating.value = true
+  isViewMode.value = false
+  selectedTenantId.value = 0
+  tenantForm.value = emptyTenant()
+  boundDomainsInput.value = ''
+  isTenantModalOpen.value = true
+}
+
+function openEditTenant(tenantId: number) {
+  isCreating.value = false
+  isViewMode.value = false
+  selectedTenantId.value = tenantId
+  const tenant = store.tenants.find((item) => item.id === tenantId)
+  if (tenant) {
+    tenantForm.value = { ...tenant, boundDomains: [...tenant.boundDomains] }
+    boundDomainsInput.value = tenant.boundDomains.join('\n')
+  }
+  isTenantModalOpen.value = true
+}
+
+function openViewTenant(tenantId: number) {
+  isCreating.value = false
+  isViewMode.value = true
+  selectedTenantId.value = tenantId
+  const tenant = store.tenants.find((item) => item.id === tenantId)
+  if (tenant) {
+    tenantForm.value = { ...tenant, boundDomains: [...tenant.boundDomains] }
+    boundDomainsInput.value = tenant.boundDomains.join('\n')
+  }
+  isTenantModalOpen.value = true
+}
+
+function closeTenantModal() {
+  isTenantModalOpen.value = false
+  isCreating.value = false
+  isViewMode.value = false
+  const fallback = selectedTenant.value ?? store.tenants[0] ?? null
+  if (fallback) {
+    selectedTenantId.value = fallback.id
+    tenantForm.value = { ...fallback, boundDomains: [...fallback.boundDomains] }
+    boundDomainsInput.value = fallback.boundDomains.join('\n')
+    return
+  }
   selectedTenantId.value = 0
   tenantForm.value = emptyTenant()
   boundDomainsInput.value = ''
 }
 
-function selectTenant(tenantId: number) {
-  isCreating.value = false
-  selectedTenantId.value = tenantId
+function handleSelectionChange(rows: TenantRecord[]) {
+  selectedTenantIds.value = rows.map((row) => row.id)
+}
+
+function appendBoundDomain(domainName: string) {
+  const normalized = domainName.trim().toLowerCase()
+  if (!normalized) return
+  const current = boundDomainsInput.value
+    .split('\n')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+  if (current.includes(normalized) || normalized === tenantForm.value.domain.trim().toLowerCase()) {
+    return
+  }
+  boundDomainsInput.value = [...current, normalized].join('\n')
 }
 
 async function saveTenant() {
   if (!tenantForm.value.name.trim()) {
-    alert('請先填寫租戶名稱')
+    ElMessage.warning('請先填寫租戶名稱')
     return
   }
   if (!tenantForm.value.domain.trim()) {
-    alert('請先填寫主域名')
+    ElMessage.warning('請先填寫主域名')
     return
   }
 
@@ -175,65 +258,93 @@ async function saveTenant() {
         seoDescription: tenantForm.value.seoDescription,
       })
       isCreating.value = false
+      isTenantModalOpen.value = false
       selectedTenantId.value = created.id
       tenantForm.value = { ...created, boundDomains: [...created.boundDomains] }
       boundDomainsInput.value = created.boundDomains.join('\n')
-      alert('租戶已成功建立')
+      ElMessage.success('租戶已成功建立')
       return
     }
 
     await store.updateTenant({ ...tenantForm.value, boundDomains: [...tenantForm.value.boundDomains] })
-    alert('租戶設定已成功儲存')
+    isTenantModalOpen.value = false
+    ElMessage.success('租戶設定已成功儲存')
   } catch (error) {
     console.error('保存租戶失敗:', error)
-    alert('保存租戶失敗: ' + (error as Error).message)
+    ElMessage.error('保存租戶失敗: ' + (error as Error).message)
   } finally {
     isSaving.value = false
   }
 }
 
-async function removeTenant() {
-  if (!selectedTenant.value) {
+async function removeTenantById(tenantId: number) {
+  const tenant = store.tenants.find((item) => item.id === tenantId)
+  if (!tenant) return
+  try {
+    await ElMessageBox.confirm(`確定要刪除租戶「${tenant.name}」嗎？`, '刪除租戶', {
+      type: 'warning',
+      confirmButtonText: '刪除',
+      cancelButtonText: '取消',
+    })
+  } catch {
     return
   }
-  if (!confirm('確定要刪除此租戶嗎？')) {
+
+  try {
+    await store.deleteTenant(tenantId)
+    selectedTenantIds.value = selectedTenantIds.value.filter((id) => id !== tenantId)
+    if (selectedTenantId.value === tenantId) {
+      const fallback = store.tenants[0]
+      selectedTenantId.value = fallback?.id ?? 0
+      tenantForm.value = fallback ? { ...fallback, boundDomains: [...fallback.boundDomains] } : emptyTenant()
+      boundDomainsInput.value = fallback?.boundDomains.join('\n') ?? ''
+      isTenantModalOpen.value = false
+      isViewMode.value = false
+      isCreating.value = false
+    }
+    ElMessage.success('租戶已成功刪除')
+  } catch (error) {
+    console.error('刪除租戶失敗:', error)
+    ElMessage.error('刪除租戶失敗: ' + (error as Error).message)
+  }
+}
+
+async function removeSelectedTenants() {
+  if (!selectedTenantIds.value.length) {
+    ElMessage.warning('請先勾選至少一個租戶')
     return
   }
   try {
-    const deletingId = selectedTenant.value.id
-    await store.deleteTenant(deletingId)
+    await ElMessageBox.confirm(`確定要刪除選中的 ${selectedTenantIds.value.length} 個租戶嗎？`, '批量刪除租戶', {
+      type: 'warning',
+      confirmButtonText: '刪除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+
+  try {
+    for (const tenantId of [...selectedTenantIds.value]) {
+      await store.deleteTenant(tenantId)
+    }
+    selectedTenantIds.value = []
     isCreating.value = false
+    isTenantModalOpen.value = false
     const fallback = store.tenants[0]
     selectedTenantId.value = fallback?.id ?? 0
     tenantForm.value = fallback ? { ...fallback, boundDomains: [...fallback.boundDomains] } : emptyTenant()
     boundDomainsInput.value = fallback?.boundDomains.join('\n') ?? ''
-    alert('租戶已成功刪除')
+    ElMessage.success('已成功刪除所選租戶')
   } catch (error) {
-    console.error('刪除租戶失敗:', error)
-    alert('刪除租戶失敗: ' + (error as Error).message)
+    console.error('批量刪除租戶失敗:', error)
+    ElMessage.error('批量刪除租戶失敗: ' + (error as Error).message)
   }
 }
 
-onMounted(async () => {
-  if (!store.tenants.length) {
-    await store.fetchTenants()
-  }
-  if (!store.brands.length) {
-    await store.fetchBrands()
-  }
-  const fallback = store.tenants[0]
-  if (fallback && !selectedTenant.value) {
-    selectedTenantId.value = fallback.id
-    tenantForm.value = { ...fallback, boundDomains: [...fallback.boundDomains] }
-    boundDomainsInput.value = fallback.boundDomains.join('\n')
-  }
-})
-
 function applyThemePreset(presetKey: string) {
   const preset = themePresets.find((item) => item.key === presetKey)
-  if (!preset) {
-    return
-  }
+  if (!preset) return
 
   tenantForm.value.theme = preset.theme
   tenantForm.value.homeTemplate = preset.homeTemplate
@@ -252,127 +363,189 @@ function applyThemePreset(presetKey: string) {
 function moveModule(index: number, direction: -1 | 1) {
   const modules = [...(tenantForm.value.homeModuleOrder ?? [])]
   const target = index + direction
-  if (target < 0 || target >= modules.length) {
-    return
-  }
+  if (target < 0 || target >= modules.length) return
   const currentValue = modules[index]
   const targetValue = modules[target]
-  if (!currentValue || !targetValue) {
-    return
-  }
+  if (!currentValue || !targetValue) return
   modules[index] = targetValue
   modules[target] = currentValue
   tenantForm.value.homeModuleOrder = modules
 }
+
+onMounted(async () => {
+  if (!store.tenants.length) {
+    await store.fetchTenants()
+  }
+  if (!store.brands.length) {
+    await store.fetchBrands()
+  }
+  domains.value = await adminAPI.getDomains()
+
+  const fallback = store.tenants[0]
+  if (fallback && !selectedTenant.value) {
+    selectedTenantId.value = fallback.id
+    tenantForm.value = { ...fallback, boundDomains: [...fallback.boundDomains] }
+    boundDomainsInput.value = fallback.boundDomains.join('\n')
+  }
+})
 </script>
 
 <template>
-  <section class="tenants-page">
-    <div class="page-heading">
-      <div>
-        <p class="label">Tenant Center</p>
-        <h2>租戶網站 CRUD 與預覽圖</h2>
-        <p class="subcopy">現在可直接新增、修改、刪除租戶網站，並維護站點預覽圖與 Logo，方便做多租戶店鋪管理。</p>
-      </div>
-      <button class="primary" type="button" @click="startCreateTenant">新增租戶網站</button>
-    </div>
+  <section class="tenant-list">
+    <el-card>
+      <template #header>
+        <div class="card-header">
+          <div>
+            <span class="title">租戶管理</span>
+            <p class="subcopy">多租戶站點、主域名、綁定域名與主題配置。</p>
+          </div>
+          <div class="actions">
+            <el-button type="danger" :icon="Delete" :disabled="selectedTenantIds.length === 0" @click="removeSelectedTenants">
+              批量刪除
+            </el-button>
+            <el-button type="primary" :icon="Plus" @click="startCreateTenant">新增租戶網站</el-button>
+          </div>
+        </div>
+      </template>
 
-    <div class="tenant-layout">
-      <article class="tenant-list-card">
-        <h3>租戶清單</h3>
-        <div class="tenant-list">
-          <button
-            v-for="tenant in store.tenants"
-            :key="tenant.id"
-            type="button"
-            class="tenant-item"
-            :class="{ selected: tenant.id === selectedTenantId && !isCreating }"
-            @click="selectTenant(tenant.id)"
-          >
-            <img :src="tenant.previewImage" :alt="tenant.name" class="tenant-thumb" />
-            <div class="tenant-copy">
-              <strong>{{ tenant.name }}</strong>
-              <p>{{ tenant.domain }}</p>
+      <el-table
+        :data="store.tenants"
+        stripe
+        style="width: 100%"
+        @selection-change="handleSelectionChange"
+      >
+        <el-table-column type="selection" width="50" />
+        <el-table-column label="租戶" min-width="220">
+          <template #default="{ row }">
+            <div class="tenant-cell">
+              <img :src="row.previewImage" :alt="row.name" class="tenant-thumb" />
+              <div class="tenant-copy">
+                <strong>{{ row.name }}</strong>
+                <small>ID {{ row.id }}</small>
+              </div>
             </div>
-            <span :class="['pill', tenant.isActive ? 'active' : 'inactive']">
-              {{ tenant.isActive ? '啟用中' : '停用' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="domain" label="主域名" min-width="180" />
+        <el-table-column label="綁定網域" min-width="240">
+          <template #default="{ row }">
+            <span class="bound-domains-text">
+              {{ row.boundDomains.length ? row.boundDomains.join(' / ') : '—' }}
             </span>
-          </button>
-        </div>
-      </article>
+          </template>
+        </el-table-column>
+        <el-table-column prop="theme" label="主題" width="120" />
+        <el-table-column label="主品牌" min-width="140">
+          <template #default="{ row }">
+            {{ brands.find((brand) => brand.id === row.primaryBrandId)?.name || '未设置' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="狀態" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.isActive ? 'success' : 'danger'" effect="light">
+              {{ row.isActive ? '啟用中' : '停用' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="260" fixed="right">
+          <template #default="{ row }">
+            <div class="row-actions">
+              <el-button size="small" :icon="View" @click="openViewTenant(row.id)">查看</el-button>
+              <el-button size="small" type="primary" :icon="Edit" @click="openEditTenant(row.id)">編輯</el-button>
+              <el-button size="small" type="danger" :icon="Delete" @click="removeTenantById(row.id)">刪除</el-button>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
 
-      <article class="editor-card">
-        <div class="card-heading">
-          <h3>{{ isCreating ? '新增租戶網站' : '租戶編輯' }}</h3>
-          <small v-if="!isCreating">ID {{ tenantForm.id }}</small>
+    <el-dialog
+      v-model="isTenantModalOpen"
+      :title="isCreating ? '新增租戶網站' : isViewMode ? '查看租戶網站' : '租戶編輯'"
+      width="960px"
+      :close-on-click-modal="false"
+    >
+      <div class="preview-panel">
+        <div class="preview-frame">
+          <img :src="tenantForm.previewImage" :alt="tenantForm.name || 'tenant preview'" />
         </div>
-
-        <div class="preview-panel">
-          <div class="preview-frame">
-            <img :src="tenantForm.previewImage" :alt="tenantForm.name || 'tenant preview'" />
-          </div>
-          <div class="logo-chip">
-            <img :src="tenantForm.logoImage" :alt="tenantForm.name || 'tenant logo'" />
-          </div>
+        <div class="logo-chip">
+          <img :src="tenantForm.logoImage" :alt="tenantForm.name || 'tenant logo'" />
         </div>
+      </div>
 
+      <el-form label-width="110px">
         <div class="form-grid">
-          <label>
-            <span>租戶名稱</span>
-            <input v-model="tenantForm.name" />
-          </label>
-          <label>
-            <span>主域名</span>
-            <input v-model="tenantForm.domain" placeholder="主域名，例如 tenant1.localhost" />
-          </label>
-          <label class="full">
-            <span>綁定網域（每行一個）</span>
-            <textarea
+          <el-form-item label="租戶名稱">
+            <el-input v-model="tenantForm.name" :disabled="isViewMode" />
+          </el-form-item>
+          <el-form-item label="主域名">
+            <el-select v-model="tenantForm.domain" :disabled="isViewMode" placeholder="請選擇主域名">
+              <el-option
+                v-for="domain in availablePrimaryDomains"
+                :key="domain.id"
+                :label="domain.domainName"
+                :value="domain.domainName"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item class="full" label="綁定網域">
+            <el-input
               v-model="boundDomainsInput"
-              rows="4"
-              placeholder="例如&#10;www.tenant1.localhost&#10;shop.brand.com"
-            ></textarea>
-          </label>
-          <label class="full">
-            <span>主題風格</span>
-            <select v-model="tenantForm.theme">
-              <option value="ocean">Ocean</option>
-              <option value="sunset">Sunset</option>
-              <option value="forest">Forest</option>
-              <option value="classic">Classic</option>
-            </select>
-          </label>
-          <div class="full">
-            <span class="field-label">主题预设</span>
+              :disabled="isViewMode"
+              type="textarea"
+              :rows="4"
+              placeholder="每行一個綁定網域"
+            />
+            <div v-if="availableBoundDomains.length" class="domain-chip-list">
+              <el-button
+                v-for="domain in availableBoundDomains"
+                :key="domain.id"
+                size="small"
+                text
+                bg
+                :disabled="isViewMode"
+                @click="appendBoundDomain(domain.domainName)"
+              >
+                {{ domain.domainName }}
+              </el-button>
+            </div>
+          </el-form-item>
+          <el-form-item class="full" label="主題風格">
+            <el-select v-model="tenantForm.theme" :disabled="isViewMode">
+              <el-option value="ocean" label="Ocean" />
+              <el-option value="sunset" label="Sunset" />
+              <el-option value="forest" label="Forest" />
+              <el-option value="classic" label="Classic" />
+            </el-select>
+          </el-form-item>
+          <el-form-item class="full" label="主题预设">
             <div class="preset-list">
-              <button
+              <el-button
                 v-for="preset in themePresets"
                 :key="preset.key"
-                type="button"
-                class="preset-chip"
+                size="small"
+                :disabled="isViewMode"
                 @click="applyThemePreset(preset.key)"
               >
                 {{ preset.label }}
-              </button>
+              </el-button>
             </div>
-          </div>
-          <label>
-            <span>首頁模板</span>
-            <select v-model="tenantForm.homeTemplate">
-              <option value="classic">Classic</option>
-              <option value="brand-first">Brand First</option>
-              <option value="campaign">Campaign</option>
-            </select>
-          </label>
-          <label>
-            <span>主品牌</span>
-            <select v-model="tenantForm.primaryBrandId">
-              <option :value="null">未设置</option>
-              <option v-for="brand in brands" :key="brand.id" :value="brand.id">{{ brand.name }}</option>
-            </select>
-          </label>
-          <div class="full">
-            <span class="field-label">首页模块顺序</span>
+          </el-form-item>
+          <el-form-item label="首頁模板">
+            <el-select v-model="tenantForm.homeTemplate" :disabled="isViewMode">
+              <el-option value="classic" label="Classic" />
+              <el-option value="brand-first" label="Brand First" />
+              <el-option value="campaign" label="Campaign" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="主品牌">
+            <el-select v-model="tenantForm.primaryBrandId" :disabled="isViewMode">
+              <el-option :value="null" label="未设置" />
+              <el-option v-for="brand in brands" :key="brand.id" :label="brand.name" :value="brand.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item class="full" label="首页模块顺序">
             <div class="module-list">
               <div
                 v-for="(moduleKey, index) in tenantForm.homeModuleOrder"
@@ -381,202 +554,116 @@ function moveModule(index: number, direction: -1 | 1) {
               >
                 <strong>{{ moduleLabels[moduleKey] ?? moduleKey }}</strong>
                 <div class="module-actions">
-                  <button type="button" class="secondary small-inline" :disabled="index === 0" @click="moveModule(index, -1)">上移</button>
-                  <button
-                    type="button"
-                    class="secondary small-inline"
-                    :disabled="index === (tenantForm.homeModuleOrder ?? []).length - 1"
+                  <el-button size="small" :disabled="isViewMode || index === 0" @click="moveModule(index, -1)">上移</el-button>
+                  <el-button
+                    size="small"
+                    :disabled="isViewMode || index === (tenantForm.homeModuleOrder ?? []).length - 1"
                     @click="moveModule(index, 1)"
                   >
                     下移
-                  </button>
+                  </el-button>
                 </div>
               </div>
             </div>
-          </div>
-          <label>
-            <span>主色</span>
-            <input v-model="tenantForm.accentColor" type="color" />
-          </label>
-          <label>
-            <span>主色加深</span>
-            <input v-model="tenantForm.accentStrongColor" type="color" />
-          </label>
-          <label>
-            <span>浅色背景</span>
-            <input v-model="tenantForm.surfaceColor" type="color" />
-          </label>
-          <label>
-            <span>页面背景</span>
-            <input v-model="tenantForm.pageBgColor" type="color" />
-          </label>
-          <label>
-            <span>卡片背景</span>
-            <input v-model="tenantForm.cardBgColor" type="color" />
-          </label>
-          <label>
-            <span>主文字</span>
-            <input v-model="tenantForm.textColor" type="color" />
-          </label>
-          <label>
-            <span>弱文字</span>
-            <input v-model="tenantForm.mutedTextColor" type="color" />
-          </label>
-          <label>
-            <span>边框色</span>
-            <input v-model="tenantForm.borderColor" type="color" />
-          </label>
-          <label>
-            <span>横幅背景</span>
-            <input v-model="tenantForm.heroBgColor" type="color" />
-          </label>
-          <label>
-            <span>标签背景</span>
-            <input v-model="tenantForm.tagBgColor" type="color" />
-          </label>
-          <label class="full">
-            <span>站點預覽圖 URL</span>
-            <input v-model="tenantForm.previewImage" />
-          </label>
-          <label class="full">
-            <span>Logo URL</span>
-            <input v-model="tenantForm.logoImage" />
-          </label>
-          <label class="full">
-            <span>SEO 標題</span>
-            <input v-model="tenantForm.seoTitle" />
-          </label>
-          <label class="full">
-            <span>SEO 描述</span>
-            <textarea v-model="tenantForm.seoDescription" rows="4"></textarea>
-          </label>
+          </el-form-item>
+          <el-form-item label="主色"><el-input v-model="tenantForm.accentColor" :disabled="isViewMode" type="color" /></el-form-item>
+          <el-form-item label="主色加深"><el-input v-model="tenantForm.accentStrongColor" :disabled="isViewMode" type="color" /></el-form-item>
+          <el-form-item label="浅色背景"><el-input v-model="tenantForm.surfaceColor" :disabled="isViewMode" type="color" /></el-form-item>
+          <el-form-item label="页面背景"><el-input v-model="tenantForm.pageBgColor" :disabled="isViewMode" type="color" /></el-form-item>
+          <el-form-item label="卡片背景"><el-input v-model="tenantForm.cardBgColor" :disabled="isViewMode" type="color" /></el-form-item>
+          <el-form-item label="主文字"><el-input v-model="tenantForm.textColor" :disabled="isViewMode" type="color" /></el-form-item>
+          <el-form-item label="弱文字"><el-input v-model="tenantForm.mutedTextColor" :disabled="isViewMode" type="color" /></el-form-item>
+          <el-form-item label="边框色"><el-input v-model="tenantForm.borderColor" :disabled="isViewMode" type="color" /></el-form-item>
+          <el-form-item label="横幅背景"><el-input v-model="tenantForm.heroBgColor" :disabled="isViewMode" type="color" /></el-form-item>
+          <el-form-item label="标签背景"><el-input v-model="tenantForm.tagBgColor" :disabled="isViewMode" type="color" /></el-form-item>
+          <el-form-item class="full" label="站點預覽圖 URL">
+            <el-input v-model="tenantForm.previewImage" :disabled="isViewMode" />
+          </el-form-item>
+          <el-form-item class="full" label="Logo URL">
+            <el-input v-model="tenantForm.logoImage" :disabled="isViewMode" />
+          </el-form-item>
+          <el-form-item class="full" label="SEO 標題">
+            <el-input v-model="tenantForm.seoTitle" :disabled="isViewMode" />
+          </el-form-item>
+          <el-form-item class="full" label="SEO 描述">
+            <el-input v-model="tenantForm.seoDescription" :disabled="isViewMode" type="textarea" :rows="4" />
+          </el-form-item>
+          <el-form-item class="full" label="站點狀態">
+            <el-switch v-model="tenantForm.isActive" :disabled="isViewMode" active-text="啟用" inactive-text="停用" />
+          </el-form-item>
         </div>
+      </el-form>
 
-        <label class="toggle">
-          <input v-model="tenantForm.isActive" type="checkbox" />
-          <span>租戶站點啟用</span>
-        </label>
-
-        <div class="actions">
-          <button v-if="!isCreating" class="danger" type="button" @click="removeTenant">刪除租戶</button>
-          <button class="primary" type="button" :disabled="isSaving" @click="saveTenant">
-            {{ isSaving ? '儲存中...' : isCreating ? '建立租戶' : '儲存租戶設定' }}
-          </button>
-        </div>
-      </article>
-    </div>
+      <template #footer>
+        <el-button @click="closeTenantModal">取消</el-button>
+        <el-button v-if="!isViewMode" type="primary" :loading="isSaving" @click="saveTenant">
+          {{ isCreating ? '建立租戶' : '儲存租戶設定' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
 <style scoped>
-.tenants-page {
+.tenant-list {
   display: grid;
   gap: 1rem;
 }
 
-.page-heading {
+.card-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 1rem;
 }
 
-.label {
-  color: var(--wp-blue);
+.card-header .title {
+  font-size: 1rem;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-size: 0.75rem;
-}
-
-.page-heading h2 {
-  margin: 0.35rem 0 0.45rem;
 }
 
 .subcopy {
-  color: var(--wp-text-muted);
-  max-width: 70ch;
+  margin: 0.25rem 0 0;
+  color: #909399;
+  font-size: 13px;
 }
 
-.tenant-layout {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: 0.9fr 1.1fr;
-}
-
-.tenant-list-card,
-.editor-card {
-  background: #fff;
-  border: 1px solid var(--wp-border);
-  border-radius: 0.5rem;
-  box-shadow: var(--wp-shadow);
-  padding: 1rem 1.25rem;
-}
-
-.tenant-list {
-  display: grid;
+.actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
-  margin-top: 1rem;
 }
 
-.tenant-item {
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.tenant-cell {
   display: grid;
-  grid-template-columns: 68px 1fr auto;
-  gap: 1rem;
+  grid-template-columns: 68px 1fr;
+  gap: 0.85rem;
   align-items: center;
-  padding: 0.9rem 1rem;
-  border: 1px solid var(--wp-border);
-  border-radius: 0.5rem;
-  background: var(--wp-surface-soft);
-  text-align: left;
-}
-
-.tenant-item.selected {
-  border-color: var(--wp-blue);
-  background: #f0f6fc;
 }
 
 .tenant-thumb {
   width: 68px;
   height: 52px;
   object-fit: cover;
-  border-radius: 0.5rem;
-  border: 1px solid var(--wp-border);
+  border-radius: 8px;
+  border: 1px solid #dcdfe6;
   background: #fff;
 }
 
-.tenant-copy p {
-  color: var(--wp-text-muted);
+.tenant-copy small,
+.bound-domains-text {
+  color: #909399;
+  font-size: 12px;
 }
 
-.pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 1.9rem;
-  padding: 0 0.7rem;
-  border-radius: 999px;
-  font-weight: 700;
-  font-size: 0.8125rem;
-}
-
-.pill.active {
-  background: rgba(0, 163, 42, 0.12);
-  color: var(--wp-green);
-}
-
-.pill.inactive {
-  background: rgba(214, 54, 56, 0.1);
-  color: var(--wp-red);
-}
-
-.card-heading {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 1rem;
-}
-
-.card-heading small {
-  color: var(--wp-text-muted);
+.bound-domains-text {
+  line-height: 1.45;
 }
 
 .preview-panel {
@@ -587,9 +674,9 @@ function moveModule(index: number, direction: -1 | 1) {
 
 .preview-frame {
   overflow: hidden;
-  border-radius: 0.5rem;
-  border: 1px solid var(--wp-border);
-  background: var(--wp-surface-soft);
+  border-radius: 8px;
+  border: 1px solid #dcdfe6;
+  background: #f5f7fa;
   min-height: 180px;
 }
 
@@ -602,8 +689,8 @@ function moveModule(index: number, direction: -1 | 1) {
 .logo-chip {
   width: 64px;
   height: 64px;
-  border-radius: 1rem;
-  border: 1px solid var(--wp-border);
+  border-radius: 16px;
+  border: 1px solid #dcdfe6;
   background: #fff;
   overflow: hidden;
 }
@@ -620,127 +707,54 @@ function moveModule(index: number, direction: -1 | 1) {
   grid-template-columns: repeat(2, 1fr);
 }
 
-label {
-  display: grid;
-  gap: 0.4rem;
+.form-grid :deep(.el-form-item) {
+  margin-bottom: 0;
 }
 
-label span {
-  font-weight: 600;
-}
-
-.field-label {
-  font-weight: 600;
-}
-
-.full {
+.form-grid .full {
   grid-column: 1 / -1;
 }
 
-.preset-list,
-.module-list,
-.module-item,
-.module-actions {
-  display: flex;
-}
-
+.domain-chip-list,
 .preset-list {
+  display: flex;
   flex-wrap: wrap;
-  gap: 0.6rem;
-}
-
-.preset-chip {
-  min-height: 2.25rem;
-  padding: 0.55rem 0.85rem;
-  border: 1px solid rgba(34, 113, 177, 0.24);
-  border-radius: 999px;
-  background: #fff;
-  color: var(--wp-blue);
-  font-weight: 600;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
 }
 
 .module-list {
-  flex-direction: column;
+  display: grid;
   gap: 0.6rem;
+  width: 100%;
 }
 
 .module-item {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
   padding: 0.8rem 0.9rem;
-  border: 1px solid var(--wp-border);
-  border-radius: 0.5rem;
-  background: var(--wp-surface-soft);
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  background: #f5f7fa;
 }
 
 .module-actions {
+  display: flex;
   gap: 0.5rem;
 }
 
-.small-inline {
-  min-height: 2rem;
-  padding: 0.4rem 0.7rem;
-}
+@media (max-width: 900px) {
+  .card-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
 
-input,
-select,
-textarea {
-  width: 100%;
-  min-height: 2.5rem;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid var(--wp-border-strong);
-  border-radius: 0.375rem;
-}
+  .actions {
+    width: 100%;
+  }
 
-textarea {
-  min-height: auto;
-  resize: vertical;
-}
-
-.toggle {
-  display: flex;
-  gap: 0.6rem;
-  align-items: center;
-  margin-top: 1rem;
-}
-
-.toggle input {
-  width: auto;
-  min-height: auto;
-}
-
-.actions {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-top: 1rem;
-}
-
-.primary,
-.danger {
-  min-height: 2.5rem;
-  padding: 0.65rem 1rem;
-  border-radius: 0.375rem;
-  font-weight: 600;
-  border: 1px solid transparent;
-}
-
-.primary {
-  background: var(--wp-blue);
-  color: #fff;
-  border-color: var(--wp-blue);
-}
-
-.danger {
-  background: #fff;
-  color: var(--wp-red);
-  border-color: rgba(214, 54, 56, 0.3);
-}
-
-@media (max-width: 960px) {
-  .page-heading,
-  .tenant-layout,
   .form-grid {
     grid-template-columns: 1fr;
   }

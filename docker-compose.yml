@@ -41,6 +41,7 @@ services:
     container_name: vape-group-admin
     environment:
       VITE_API_URL: http://backend:8088
+      VITE_APP_BASE: /fuck/
     ports:
       - "5274:80"
     networks:

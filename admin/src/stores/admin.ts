@@ -4,7 +4,6 @@ import { adminAPI } from '@/api/admin'
 import {
   type BrandRecord,
   type CategoryRecord,
-  orderRecords,
   type OrderRecord,
   type PlatformConfigRecord,
   type ProductOverrideRecord,
@@ -21,10 +20,13 @@ export const useAdminStore = defineStore('admin', () => {
   const platformConfig = ref<PlatformConfigRecord>({
     id: 0,
     lineContactUrl: '',
+    faqHtml: '',
+    shippingFee: 90,
+    freeShippingThreshold: 1200,
     featuredCategoryIds: [],
     featuredBrandIds: [],
   })
-  const orders = ref<OrderRecord[]>(structuredClone(orderRecords))
+  const orders = ref<OrderRecord[]>([])
   const loading = ref(false)
 
   const activeTenants = computed(() => tenants.value.filter((tenant) => tenant.isActive))
@@ -83,6 +85,16 @@ export const useAdminStore = defineStore('admin', () => {
     return result
   }
 
+  async function fetchOrders() {
+    loading.value = true
+    try {
+      orders.value = await adminAPI.getOrders()
+      return orders.value
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function createTenant(payload: Omit<TenantRecord, 'id'>) {
     const created = await adminAPI.createTenant(payload)
     tenants.value.unshift(created)
@@ -127,6 +139,9 @@ export const useAdminStore = defineStore('admin', () => {
   async function updatePlatformConfig(payload: PlatformConfigRecord) {
     const updated = await adminAPI.updatePlatformConfig({
       lineContactUrl: payload.lineContactUrl,
+      faqHtml: payload.faqHtml,
+      shippingFee: payload.shippingFee,
+      freeShippingThreshold: payload.freeShippingThreshold,
       featuredCategoryIds: payload.featuredCategoryIds,
       featuredBrandIds: payload.featuredBrandIds,
     })
@@ -154,6 +169,7 @@ export const useAdminStore = defineStore('admin', () => {
       baseStockQuantity: payload.baseStockQuantity,
       category: payload.category,
       categoryId: payload.categoryId,
+      categoryIds: payload.categoryIds,
       brand: payload.brand,
       brandId: payload.brandId,
       previewImage: payload.previewImage,
@@ -162,6 +178,7 @@ export const useAdminStore = defineStore('admin', () => {
       status: payload.status,
       description: payload.description,
       longDescription: payload.longDescription,
+      specificationHtml: payload.specificationHtml,
       badge: payload.badge,
       rating: payload.rating,
       reviews: payload.reviews,
@@ -299,7 +316,7 @@ export const useAdminStore = defineStore('admin', () => {
   }
 
   async function bootstrap() {
-    await Promise.all([fetchTenants(), fetchProducts(), fetchPlatformConfig()])
+    await Promise.all([fetchTenants(), fetchProducts(), fetchPlatformConfig(), fetchOrders()])
   }
 
   return {
@@ -319,6 +336,7 @@ export const useAdminStore = defineStore('admin', () => {
     fetchProductOverride,
     fetchCategories,
     fetchBrands,
+    fetchOrders,
     createTenant,
     updateTenant,
     updatePlatformConfig,

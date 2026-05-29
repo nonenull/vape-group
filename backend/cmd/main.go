@@ -34,6 +34,7 @@ func main() {
 		&models.TenantProductOverride{},
 		&models.Category{},
 		&models.Brand{},
+		&models.Domain{},
 		&models.Order{},
 		&models.OrderItem{},
 	); err != nil {
@@ -55,6 +56,9 @@ func main() {
 	if err := os.MkdirAll(cfg.UploadDir, 0o755); err != nil {
 		log.Fatal("Failed to prepare upload directory:", err)
 	}
+	if err := os.MkdirAll(cfg.UploadDir+"/wp-content/uploads", 0o755); err != nil {
+		log.Fatal("Failed to prepare wordpress-compatible upload directory:", err)
+	}
 
 	// 初始化Gin路由
 	router := gin.Default()
@@ -65,6 +69,7 @@ func main() {
 
 	// 设置API路由
 	router.Static("/uploads", cfg.UploadDir)
+	router.Static("/wp-content/uploads", cfg.UploadDir+"/wp-content/uploads")
 	api.SetupRoutes(router, db, cfg)
 
 	// 启动服务器

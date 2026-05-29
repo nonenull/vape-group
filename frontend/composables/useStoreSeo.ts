@@ -1,5 +1,9 @@
+import { useRequestHeaders } from '#app'
 import { computed } from 'vue'
 import type { TenantInfo } from '~/types/store'
+
+const DEFAULT_META_DESCRIPTION_LENGTH = 160
+type OpenGraphType = 'article' | 'website' | 'product'
 
 function absoluteUrl(path: string) {
   if (import.meta.client) {
@@ -16,7 +20,7 @@ export function useStoreSeo(input: {
   title: string
   description: string
   image?: string
-  type?: 'website' | 'product' | 'article'
+  type?: OpenGraphType
   robots?: string
   canonicalPath?: string
   siteName?: string
@@ -56,7 +60,7 @@ export function useStoreSeo(input: {
     robots: input.robots ?? 'index,follow',
     ogTitle: input.title,
     ogDescription: input.description,
-    ogType: input.type ?? 'website',
+    ogType: (input.type ?? 'website') as 'article' | 'website',
     ogSiteName: input.siteName ?? 'Vape Group 商城',
     ogLocale: input.locale ?? 'zh_TW',
     ogUrl: pageUrl.value,
@@ -66,6 +70,87 @@ export function useStoreSeo(input: {
     twitterDescription: input.description,
     twitterImage: imageUrl.value,
   })
+}
+
+function decodeHtmlEntities(input: string) {
+  const namedEntities: Record<string, string> = {
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    apos: '\'',
+    nbsp: ' ',
+    mdash: '-',
+    ndash: '-',
+    hellip: '...',
+  }
+
+  return input.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (_, entity: string) => {
+    if (entity.startsWith('#x') || entity.startsWith('#X')) {
+      const codePoint = Number.parseInt(entity.slice(2), 16)
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : ''
+    }
+
+    if (entity.startsWith('#')) {
+      const codePoint = Number.parseInt(entity.slice(1), 10)
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : ''
+    }
+
+    return namedEntities[entity] ?? ''
+  })
+}
+
+function stripHtml(input: string) {
+  return input
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/(p|div|li|ul|ol|h[1-6]|table|tr|td|section|article)>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+}
+
+function truncateText(input: string, maxLength: number) {
+  if (input.length <= maxLength) {
+    return input
+  }
+
+  return `${input.slice(0, Math.max(0, maxLength - 1)).trim()}…`
+}
+
+export function sanitizeMetaDescription(input: string | null | undefined, maxLength = DEFAULT_META_DESCRIPTION_LENGTH) {
+  const plainText = decodeHtmlEntities(stripHtml(String(input ?? '')))
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return truncateText(plainText, maxLength)
+}
+
+export function sanitizeProductMetaDescription(input: {
+  description: string | null | undefined
+  productName?: string | null | undefined
+  maxLength?: number
+}) {
+  const plainText = decodeHtmlEntities(stripHtml(String(input.description ?? '')))
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!plainText) {
+    return ''
+  }
+
+  const startCandidates = [
+    /產品名稱\s*[:：]/,
+    /产品名称\s*[:：]/,
+    input.productName ? new RegExp(input.productName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) : null,
+  ].filter(Boolean) as RegExp[]
+
+  const startIndex = startCandidates
+    .map((pattern) => plainText.search(pattern))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0]
+
+  const normalizedText = startIndex != null ? plainText.slice(startIndex).trim() : plainText
+  return truncateText(normalizedText, input.maxLength ?? DEFAULT_META_DESCRIPTION_LENGTH)
 }
 
 export function createStoreJsonLd(input: {

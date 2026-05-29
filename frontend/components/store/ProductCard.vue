@@ -11,7 +11,6 @@ const props = withDefaults(defineProps<{
   showDetailButton: true,
 })
 
-const router = useRouter()
 const cartStore = useCartStore()
 
 const displayPrice = computed(() => props.product.salePrice ?? props.product.price)
@@ -71,7 +70,6 @@ const confirmVariantAddToCart = async () => {
 
   cartStore.addItem(variantSourceProduct.value, selectedSkuVariant.value, optionLabel)
   closeVariantPicker()
-  await router.push('/cart')
 }
 
 const addToCart = async () => {
@@ -83,7 +81,6 @@ const addToCart = async () => {
   }
 
   cartStore.addItem(sourceProduct)
-  await router.push('/cart')
 }
 </script>
 
@@ -100,7 +97,6 @@ const addToCart = async () => {
       <NuxtLink :to="productHref" class="title-link">
         <h3>{{ product.name }}</h3>
       </NuxtLink>
-      <p>{{ product.description }}</p>
 
       <div class="product-footer">
         <div class="price-group">
@@ -302,6 +298,10 @@ const addToCart = async () => {
   gap: 1rem;
 }
 
+.variant-dialog-head > div {
+  min-width: 0;
+}
+
 .variant-dialog-label,
 .variant-summary small {
   color: var(--wp-text-muted);
@@ -319,7 +319,7 @@ const addToCart = async () => {
 }
 
 .variant-options {
-  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
 }
 
 .variant-option-button,
@@ -327,8 +327,19 @@ const addToCart = async () => {
   border: 1px solid var(--wp-border);
   background: #ffffff;
   border-radius: 999px;
-  padding: 0.7rem 0.9rem;
+  padding: 0.55rem 0.75rem;
   cursor: pointer;
+}
+
+.variant-option-button {
+  min-height: 34px;
+  font-size: 0.82rem;
+  line-height: 1.2;
+}
+
+.variant-close {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .variant-option-button.active {

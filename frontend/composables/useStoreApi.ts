@@ -1,5 +1,6 @@
 import axios from 'axios'
-import type { Product, ProductListApiItem, ProductListResponse, Category, TenantInfo, PlatformConfig, Brand } from '~/types/store'
+import { useRequestHeaders, useRuntimeConfig } from '#app'
+import type { Product, ProductListApiItem, ProductListResponse, Category, TenantInfo, PlatformConfig, Brand, StoreOrder } from '~/types/store'
 
 interface TenantResponse {
   id: number
@@ -33,6 +34,9 @@ interface TenantResponse {
 interface PlatformConfigResponse {
   id: number
   line_contact_url?: string
+  faq_html?: string
+  shipping_fee?: number
+  free_shipping_threshold?: number
   featured_category_ids?: number[]
   featured_brand_ids?: number[]
 }
@@ -67,6 +71,7 @@ interface OrderResponse {
   items: Array<{
     id: number
     product_id: number
+    name?: string
     variant_name: string
     variant_sku: string
     quantity: number
@@ -176,6 +181,14 @@ function createApiClient() {
 }
 
 function normalizeProduct(input: ProductListApiItem, assetBaseURL: string): Product {
+  const categoryIds = Array.isArray(input.category_ids ?? input.specifications?.categoryIds)
+    ? (input.category_ids ?? input.specifications?.categoryIds)
+      .map((item: any) => Number(item))
+      .filter((item: number) => Number.isFinite(item) && item > 0)
+    : input.category_id != null
+      ? [Number(input.category_id)]
+      : []
+
   const gallery =
     input.custom_images?.length
       ? input.custom_images
@@ -225,6 +238,10 @@ function normalizeProduct(input: ProductListApiItem, assetBaseURL: string): Prod
     input.long_description ??
     String(input.specifications?.longDescription ?? '')
 
+  const specificationHtml =
+    input.specification_html ??
+    String(input.specifications?.specificationHtml ?? '')
+
   return {
     id: Number(input.id),
     name: input.custom_name ?? input.base_name ?? '未命名商品',
@@ -234,6 +251,7 @@ function normalizeProduct(input: ProductListApiItem, assetBaseURL: string): Prod
     salePrice: undefined,
     category: input.category ?? String(input.specifications?.category ?? '未分類'),
     categoryId: input.category_id ?? null,
+    categoryIds,
     brand: input.brand ?? String(input.specifications?.brand ?? ''),
     rating: Number(input.rating ?? input.specifications?.rating ?? 4.5),
     reviews: Number(input.reviews ?? input.specifications?.reviews ?? 0),
@@ -244,6 +262,7 @@ function normalizeProduct(input: ProductListApiItem, assetBaseURL: string): Prod
     badge: input.badge ?? String(input.specifications?.badge ?? ''),
     description,
     longDescription,
+    specificationHtml,
     flavors: Array.isArray(input.flavors) ? input.flavors : [],
     variants: Array.isArray(input.variants) ? input.variants : [],
     optionGroups,
@@ -313,6 +332,9 @@ function normalizePlatformConfig(input: PlatformConfigResponse): PlatformConfig 
   return {
     id: Number(input.id ?? 0),
     lineContactUrl: input.line_contact_url ?? '',
+    faqHtml: input.faq_html ?? '',
+    shippingFee: Number(input.shipping_fee ?? 90),
+    freeShippingThreshold: Number(input.free_shipping_threshold ?? 1200),
     featuredCategoryIds: Array.isArray(input.featured_category_ids)
       ? input.featured_category_ids
         .map((item) => Number(item))
@@ -326,11 +348,27 @@ function normalizePlatformConfig(input: PlatformConfigResponse): PlatformConfig 
   }
 }
 
-export async function fetchProducts(page = 1, limit = 20) {
+export async function fetchProducts(
+  page = 1,
+  limit = 20,
+  filters?: {
+    keyword?: string
+    category?: string | number
+    brand?: string
+    sort?: string
+  },
+) {
   const assetBaseURL = getPublicAssetBaseURL()
   const client = createApiClient()
   const response = await client.get<ProductListResponse>('/api/products', {
-    params: { page, limit },
+    params: {
+      page,
+      limit,
+      ...(filters?.keyword ? { keyword: filters.keyword } : {}),
+      ...(filters?.category ? { category: filters.category } : {}),
+      ...(filters?.brand ? { brand: filters.brand } : {}),
+      ...(filters?.sort && filters.sort !== 'default' ? { sort: filters.sort } : {}),
+    },
   })
   const products = response.data.data
     .map((item) => normalizeProduct(item, assetBaseURL))
@@ -382,4 +420,31 @@ export async function createOrder(payload: CreateOrderPayload) {
   const client = createApiClient()
   const response = await client.post<OrderResponse>('/api/orders', payload)
   return response.data
+}
+
+export async function fetchOrderDetail(id: number): Promise<StoreOrder> {
+  const client = createApiClient()
+  const response = await client.get<OrderResponse>(`/api/orders/${id}`)
+  return {
+    id: response.data.id,
+    totalAmount: response.data.total_amount,
+    status: response.data.status,
+    lineId: response.data.line_id,
+    phone: response.data.phone,
+    convenienceStore: response.data.convenience_store,
+    shippingAddress: response.data.shipping_address,
+    paymentMethod: response.data.payment_method,
+    createdAt: response.data.created_at,
+    items: Array.isArray(response.data.items)
+      ? response.data.items.map((item) => ({
+        id: item.id,
+        productId: item.product_id,
+        name: item.name ?? `商品 #${item.product_id}`,
+        variantName: item.variant_name,
+        variantSku: item.variant_sku,
+        quantity: item.quantity,
+        price: item.price,
+      }))
+      : [],
+  }
 }

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useAdminStore } from '@/stores/admin'
 
 const store = useAdminStore()
 const selectedOrderId = ref(store.orders[0]?.id ?? 0)
 const selectedOrder = computed(() => store.orders.find((item) => item.id === selectedOrderId.value))
-const selectedStatus = ref(selectedOrder.value?.status ?? '待付款')
+const selectedStatus = ref(selectedOrder.value?.status ?? '已下单')
 
 watch(
   selectedOrder,
@@ -20,8 +21,17 @@ watch(
 function saveStatus() {
   if (selectedOrder.value) {
     store.updateOrderStatus(selectedOrder.value.id, selectedStatus.value)
+    ElMessage.success('訂單狀態已更新')
   }
 }
+
+onMounted(async () => {
+  await store.fetchOrders()
+  if (!store.tenants.length) {
+    await store.fetchTenants()
+  }
+  selectedOrderId.value = store.orders[0]?.id ?? 0
+})
 </script>
 
 <template>
@@ -30,44 +40,49 @@ function saveStatus() {
       <div>
         <p class="label">Order Center</p>
         <h2>訂單追蹤</h2>
-        <p class="subcopy">對應 `product.md` 的訂單模組，先建立後台追蹤與狀態流轉頁面，方便之後直接接入真實 API。</p>
+        <p class="subcopy">對應訂單模組，集中查看訂單狀態、客戶資訊與商品明細。</p>
       </div>
     </div>
 
     <div class="orders-layout">
-      <article class="table-card">
-        <table class="order-table">
-          <thead>
-            <tr>
-              <th>訂單編號</th>
-              <th>租戶</th>
-              <th>客戶</th>
-              <th>金額</th>
-              <th>狀態</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="order in store.orders"
-              :key="order.id"
-              :class="{ selected: order.id === selectedOrderId }"
-              @click="selectedOrderId = order.id"
-            >
-              <td>{{ order.orderNo }}</td>
-              <td>{{ store.getTenantName(order.tenantId) }}</td>
-              <td>{{ order.customerName }}</td>
-              <td>NT$ {{ order.totalAmount.toLocaleString() }}</td>
-              <td>{{ order.status }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </article>
+      <el-card>
+        <template #header>
+          <div class="card-header">
+            <span class="title">訂單列表</span>
+            <small>{{ store.orders.length }} 筆訂單</small>
+          </div>
+        </template>
 
-      <article class="detail-card" v-if="selectedOrder">
-        <div class="card-heading">
-          <h3>訂單詳情</h3>
-          <small>{{ selectedOrder.createdAt }}</small>
-        </div>
+        <el-table
+          :data="store.orders"
+          stripe
+          highlight-current-row
+          @current-change="(row: typeof store.orders[number] | undefined) => selectedOrderId = row?.id ?? 0"
+        >
+          <el-table-column prop="orderNo" label="訂單編號" min-width="150" />
+          <el-table-column label="租戶" min-width="120">
+            <template #default="{ row }">
+              {{ store.getTenantName(row.tenantId) }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="customerName" label="客戶" min-width="120" />
+          <el-table-column label="金額" min-width="120">
+            <template #default="{ row }">
+              NT$ {{ row.totalAmount.toLocaleString() }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="status" label="狀態" width="110" />
+        </el-table>
+      </el-card>
+
+      <el-card v-if="selectedOrder" class="detail-card">
+        <template #header>
+          <div class="card-header">
+            <span class="title">訂單詳情</span>
+            <small>{{ selectedOrder.createdAt }}</small>
+          </div>
+        </template>
+
         <div class="detail-grid">
           <div>
             <span>訂單編號</span>
@@ -90,15 +105,16 @@ function saveStatus() {
             <strong>NT$ {{ selectedOrder.totalAmount.toLocaleString() }}</strong>
           </div>
         </div>
-        <label class="status-control">
-          <span>訂單狀態</span>
-          <select v-model="selectedStatus">
-            <option value="待付款">待付款</option>
-            <option value="已付款">已付款</option>
-            <option value="已出貨">已出貨</option>
-            <option value="已完成">已完成</option>
-          </select>
-        </label>
+
+        <div class="status-panel">
+          <span class="status-label">訂單狀態</span>
+          <el-select v-model="selectedStatus" style="width: 100%">
+            <el-option value="已下单" label="已下单" />
+            <el-option value="已出貨" label="已出貨" />
+            <el-option value="已完成" label="已完成" />
+          </el-select>
+        </div>
+
         <div v-if="selectedOrder.items?.length" class="order-items">
           <h4>訂購項目</h4>
           <div v-for="(item, index) in selectedOrder.items" :key="`${item.sku}-${index}`" class="order-item-row">
@@ -112,10 +128,11 @@ function saveStatus() {
             </div>
           </div>
         </div>
+
         <div class="actions">
-          <button class="primary" type="button" @click="saveStatus">儲存狀態</button>
+          <el-button type="primary" @click="saveStatus">儲存狀態</el-button>
         </div>
-      </article>
+      </el-card>
     </div>
   </section>
 </template>
@@ -126,6 +143,10 @@ function saveStatus() {
   gap: 1rem;
 }
 
+.page-heading h2 {
+  margin: 0.35rem 0 0.45rem;
+}
+
 .label {
   color: var(--wp-blue);
   font-weight: 700;
@@ -134,13 +155,13 @@ function saveStatus() {
   font-size: 0.75rem;
 }
 
-.page-heading h2 {
-  margin: 0.35rem 0 0.45rem;
-}
-
-.subcopy {
-  color: var(--wp-text-muted);
-  max-width: 72ch;
+.subcopy,
+.card-header small,
+.detail-grid span,
+.order-item-row p,
+.order-item-side span,
+.order-item-side small {
+  color: #909399;
 }
 
 .orders-layout {
@@ -149,47 +170,21 @@ function saveStatus() {
   grid-template-columns: 1fr 360px;
 }
 
-.table-card,
-.detail-card {
-  background: #fff;
-  border: 1px solid var(--wp-border);
-  border-radius: 0.5rem;
-  box-shadow: var(--wp-shadow);
-}
-
-.order-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.order-table th,
-.order-table td {
-  padding: 0.95rem 1rem;
-  border-bottom: 1px solid var(--wp-border);
-  text-align: left;
-}
-
-.order-table tbody tr {
-  cursor: pointer;
-}
-
-.order-table tbody tr.selected {
-  background: #f0f6fc;
-}
-
-.detail-card {
-  padding: 1rem 1.25rem;
-}
-
-.card-heading {
+.card-header {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 1rem;
+  align-items: center;
+  gap: 1rem;
 }
 
-.card-heading small,
-.detail-grid span {
-  color: var(--wp-text-muted);
+.card-header .title {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.detail-card :deep(.el-card__body) {
+  display: grid;
+  gap: 1rem;
 }
 
 .detail-grid {
@@ -202,16 +197,18 @@ function saveStatus() {
   margin-top: 0.15rem;
 }
 
-.status-control {
+.status-panel {
   display: grid;
-  gap: 0.4rem;
-  margin-top: 1rem;
+  gap: 0.45rem;
+}
+
+.status-label {
+  font-weight: 600;
 }
 
 .order-items {
   display: grid;
   gap: 0.75rem;
-  margin-top: 1rem;
 }
 
 .order-item-row {
@@ -219,56 +216,35 @@ function saveStatus() {
   justify-content: space-between;
   gap: 1rem;
   padding: 0.85rem 0.95rem;
-  border: 1px solid var(--wp-border);
-  border-radius: 0.5rem;
-  background: var(--wp-surface-soft);
-}
-
-.order-item-row p,
-.order-item-side span,
-.order-item-side small {
-  color: var(--wp-text-muted);
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  background: #f5f7fa;
 }
 
 .order-item-side {
   text-align: right;
 }
 
-.status-control span {
-  font-weight: 600;
-}
-
-select {
-  min-height: 2.5rem;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid var(--wp-border-strong);
-  border-radius: 0.375rem;
-}
-
 .actions {
   display: flex;
   justify-content: flex-end;
-  margin-top: 1rem;
-}
-
-.primary {
-  min-height: 2.5rem;
-  padding: 0.65rem 1rem;
-  border: 1px solid var(--wp-blue);
-  border-radius: 0.375rem;
-  background: var(--wp-blue);
-  color: #fff;
-  font-weight: 600;
 }
 
 @media (max-width: 980px) {
   .orders-layout {
     grid-template-columns: 1fr;
   }
+}
 
-  .order-table {
-    display: block;
-    overflow-x: auto;
+@media (max-width: 640px) {
+  .card-header,
+  .order-item-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .order-item-side {
+    text-align: left;
   }
 }
 </style>
