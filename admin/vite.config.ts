@@ -9,7 +9,7 @@ import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: process.env.VITE_APP_BASE?.trim() || '/',
+  base: process.env.VITE_APP_BASE?.trim() || '/fuck/',
   plugins: [
     vue(),
     AutoImport({
