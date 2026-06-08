@@ -29,7 +29,11 @@ func TenantMiddleware(db *gorm.DB) gin.HandlerFunc {
 		tenant, matchedDomain, err := resolveTenantByDomain(db, domain)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				c.JSON(404, gin.H{"error": "Tenant not found"})
+				status := http.StatusNotFound
+				if c.Request.URL.Path == "/__tenant_host_check" {
+					status = http.StatusForbidden
+				}
+				c.JSON(status, gin.H{"error": "Tenant not found"})
 				c.Abort()
 				return
 			}
