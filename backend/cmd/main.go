@@ -30,6 +30,7 @@ func main() {
 		&models.Tenant{},
 		&models.PlatformConfig{},
 		&models.User{},
+		&models.AdminUser{},
 		&models.Product{},
 		&models.TenantProductOverride{},
 		&models.Category{},
@@ -43,6 +44,9 @@ func main() {
 
 	if err := models.EnsureDevTenants(db, cfg.DevTenantDomains); err != nil {
 		log.Fatal("Failed to ensure development tenants:", err)
+	}
+	if err := models.EnsureAdminUser(db, cfg.AdminUsername, cfg.AdminPassword, cfg.AdminName); err != nil {
+		log.Fatal("Failed to ensure admin user:", err)
 	}
 	if err := models.EnsureSharedCategories(db); err != nil {
 		log.Fatal("Failed to ensure shared categories:", err)

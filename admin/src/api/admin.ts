@@ -1,4 +1,5 @@
 import type {
+  AdminAuthUserRecord,
   BrandRecord,
   CategoryRecord,
   DomainRecord,
@@ -11,8 +12,12 @@ import type {
   ProductRecord,
   ProductSkuVariantRecord,
   ProductVariantRecord,
+  HomeBannerRecord,
+  HomeSectionRecord,
   TenantRecord,
 } from '@/data/adminMock'
+
+const ADMIN_AUTH_TOKEN_KEY = 'vape-group-admin-token'
 
 const getApiBaseURL = () => {
   const envBaseURL = import.meta.env.VITE_API_URL?.trim()
@@ -52,10 +57,12 @@ export const resolveAssetURL = (value: string) => {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getAdminAuthToken()
   const response = await fetch(`${getApiBaseURL()}${path}`, {
     ...init,
     headers: {
       ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
   })
@@ -76,10 +83,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
+export function getAdminAuthToken() {
+  return localStorage.getItem(ADMIN_AUTH_TOKEN_KEY)?.trim() || ''
+}
+
+export function setAdminAuthToken(token: string) {
+  const value = token.trim()
+  if (!value) {
+    localStorage.removeItem(ADMIN_AUTH_TOKEN_KEY)
+    return
+  }
+  localStorage.setItem(ADMIN_AUTH_TOKEN_KEY, value)
+}
+
+export function clearAdminAuthToken() {
+  localStorage.removeItem(ADMIN_AUTH_TOKEN_KEY)
+}
+
 const mapTenant = (input: any): TenantRecord => ({
   id: Number(input.id),
   domain: input.domain ?? '',
   boundDomains: input.bound_domains ?? input.boundDomains ?? [],
+  npmProxyHostId: input.npm_proxy_host_id ?? input.npmProxyHostId ?? null,
   name: input.name ?? '',
   isActive: Boolean(input.is_active ?? input.isActive),
   theme: input.theme ?? '',
@@ -104,11 +129,36 @@ const mapTenant = (input: any): TenantRecord => ({
   supportText: input.support_text ?? input.supportText ?? '',
   seoTitle: input.seo_title ?? input.seoTitle ?? '',
   seoDescription: input.seo_description ?? input.seoDescription ?? '',
+  homeBanner: {
+    enabled: Boolean(input.home_banner?.enabled ?? input.homeBanner?.enabled ?? false),
+    title: input.home_banner?.title ?? input.homeBanner?.title ?? '',
+    subtitle: input.home_banner?.subtitle ?? input.homeBanner?.subtitle ?? '',
+    image: input.home_banner?.image ?? input.homeBanner?.image ?? '',
+    link: input.home_banner?.link ?? input.homeBanner?.link ?? '',
+    buttonText: input.home_banner?.button_text ?? input.homeBanner?.buttonText ?? '',
+  } satisfies HomeBannerRecord,
+  homeSections: Array.isArray(input.home_sections ?? input.homeSections)
+    ? (input.home_sections ?? input.homeSections)
+      .map((item: any, index: number): HomeSectionRecord => ({
+        id: String(item?.id ?? `${item?.type ?? 'section'}-${index + 1}`).trim(),
+        type: String(item?.type ?? '').trim(),
+        enabled: Boolean(item?.enabled ?? true),
+        title: String(item?.title ?? '').trim(),
+        limit: Number(item?.limit ?? 0),
+      }))
+      .filter((item: HomeSectionRecord) => item.type)
+    : [],
+})
+
+const mapTenantDomainOperation = (input: any) => ({
+  tenant: mapTenant(input?.tenant ?? input),
+  npmResult: input?.npm_result ?? input?.npmResult ?? null,
 })
 
 const tenantPayload = (payload: Omit<TenantRecord, 'id'>) => ({
   domain: payload.domain,
   bound_domains: payload.boundDomains,
+  npm_proxy_host_id: payload.npmProxyHostId ?? null,
   name: payload.name,
   is_active: payload.isActive,
   theme: payload.theme,
@@ -133,6 +183,23 @@ const tenantPayload = (payload: Omit<TenantRecord, 'id'>) => ({
   support_text: payload.supportText,
   seo_title: payload.seoTitle,
   seo_description: payload.seoDescription,
+  home_banner: {
+    enabled: payload.homeBanner?.enabled ?? false,
+    title: payload.homeBanner?.title ?? '',
+    subtitle: payload.homeBanner?.subtitle ?? '',
+    image: payload.homeBanner?.image ?? '',
+    link: payload.homeBanner?.link ?? '',
+    button_text: payload.homeBanner?.buttonText ?? '',
+  },
+  home_sections: Array.isArray(payload.homeSections)
+    ? payload.homeSections.map((item) => ({
+      id: item.id,
+      type: item.type,
+      enabled: item.enabled,
+      title: item.title,
+      limit: item.limit,
+    }))
+    : [],
 })
 
 const mapProduct = (input: any): ProductRecord => ({
@@ -310,7 +377,36 @@ const mapOrder = (input: any): OrderRecord => ({
     : [],
 })
 
+const mapAdminAuthUser = (input: any): AdminAuthUserRecord => ({
+  id: Number(input.id ?? 0),
+  username: input.username ?? '',
+  name: input.name ?? '',
+  isActive: Boolean(input.is_active ?? input.isActive ?? true),
+  lastLoginAt: input.last_login_at ?? input.lastLoginAt ?? '',
+})
+
 export const adminAPI = {
+  async login(username: string, password: string) {
+    const response = await request<{ token: string, user: any }>('/api/admin/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        password,
+      }),
+    })
+    return {
+      token: response.token ?? '',
+      user: mapAdminAuthUser(response.user),
+    }
+  },
+  async logout() {
+    return request<{ success: boolean }>('/api/admin/auth/logout', {
+      method: 'POST',
+    })
+  },
+  async getCurrentAdminUser() {
+    return mapAdminAuthUser(await request<any>('/api/admin/auth/me'))
+  },
   async uploadImage(file: File) {
     const formData = new FormData()
     formData.append('file', file)
@@ -349,6 +445,22 @@ export const adminAPI = {
     return mapTenant(await request<any>(`/api/admin/tenants/${id}`, {
       method: 'PUT',
       body: JSON.stringify(tenantPayload(payload)),
+    }))
+  },
+  async addTenantDomain(tenantId: number, domain: string) {
+    return mapTenantDomainOperation(await request<any>(`/api/admin/tenants/${tenantId}/domains`, {
+      method: 'POST',
+      body: JSON.stringify({ domain }),
+    }))
+  },
+  async removeTenantDomain(tenantId: number, domain: string) {
+    return mapTenantDomainOperation(await request<any>(`/api/admin/tenants/${tenantId}/domains/${encodeURIComponent(domain)}`, {
+      method: 'DELETE',
+    }))
+  },
+  async setTenantPrimaryDomain(tenantId: number, domain: string) {
+    return mapTenantDomainOperation(await request<any>(`/api/admin/tenants/${tenantId}/domains/${encodeURIComponent(domain)}/set-primary`, {
+      method: 'PUT',
     }))
   },
   deleteTenant(id: number) {

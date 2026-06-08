@@ -24,67 +24,102 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/mozillazg/go-pinyin"
 	"github.com/vape-group/backend/config"
+	"github.com/vape-group/backend/internal/middleware"
 	"github.com/vape-group/backend/internal/models"
+	"github.com/vape-group/backend/internal/service"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
 type tenantPayload struct {
-	Domain         string   `json:"domain"`
-	BoundDomains   []string `json:"bound_domains"`
-	Name           string   `json:"name"`
-	IsActive       bool     `json:"is_active"`
-	Theme          string   `json:"theme"`
-	HomeTemplate   string   `json:"home_template"`
-	HomeModuleOrder []string `json:"home_module_order"`
-	PrimaryBrandID *uint    `json:"primary_brand_id"`
-	PreviewImage   string   `json:"preview_image"`
-	LogoImage      string   `json:"logo_image"`
-	AccentColor    string   `json:"accent_color"`
-	AccentStrongColor string `json:"accent_strong_color"`
-	SurfaceColor   string   `json:"surface_color"`
-	PageBgColor    string   `json:"page_bg_color"`
-	CardBgColor    string   `json:"card_bg_color"`
-	TextColor      string   `json:"text_color"`
-	MutedTextColor string   `json:"muted_text_color"`
-	BorderColor    string   `json:"border_color"`
-	HeroBgColor    string   `json:"hero_bg_color"`
-	TagBgColor     string   `json:"tag_bg_color"`
-	HeroTitle      string   `json:"hero_title"`
-	Tagline        string   `json:"tagline"`
-	Announcement   string   `json:"announcement"`
-	SupportText    string   `json:"support_text"`
-	SEOTitle       string   `json:"seo_title"`
-	SEODescription string   `json:"seo_description"`
+	Domain            string              `json:"domain"`
+	BoundDomains      []string            `json:"bound_domains"`
+	NPMProxyHostID    *uint               `json:"npm_proxy_host_id"`
+	Name              string              `json:"name"`
+	IsActive          bool                `json:"is_active"`
+	Theme             string              `json:"theme"`
+	HomeTemplate      string              `json:"home_template"`
+	HomeModuleOrder   []string            `json:"home_module_order"`
+	HomeBanner        homeBannerConfig    `json:"home_banner"`
+	HomeSections      []homeSectionConfig `json:"home_sections"`
+	PrimaryBrandID    *uint               `json:"primary_brand_id"`
+	PreviewImage      string              `json:"preview_image"`
+	LogoImage         string              `json:"logo_image"`
+	AccentColor       string              `json:"accent_color"`
+	AccentStrongColor string              `json:"accent_strong_color"`
+	SurfaceColor      string              `json:"surface_color"`
+	PageBgColor       string              `json:"page_bg_color"`
+	CardBgColor       string              `json:"card_bg_color"`
+	TextColor         string              `json:"text_color"`
+	MutedTextColor    string              `json:"muted_text_color"`
+	BorderColor       string              `json:"border_color"`
+	HeroBgColor       string              `json:"hero_bg_color"`
+	TagBgColor        string              `json:"tag_bg_color"`
+	HeroTitle         string              `json:"hero_title"`
+	Tagline           string              `json:"tagline"`
+	Announcement      string              `json:"announcement"`
+	SupportText       string              `json:"support_text"`
+	SEOTitle          string              `json:"seo_title"`
+	SEODescription    string              `json:"seo_description"`
 }
 
 type tenantResponse struct {
-	ID             uint     `json:"id"`
-	Domain         string   `json:"domain"`
-	BoundDomains   []string `json:"bound_domains"`
-	Name           string   `json:"name"`
-	IsActive       bool     `json:"is_active"`
-	Theme          string   `json:"theme"`
-	HomeTemplate   string   `json:"home_template"`
-	HomeModuleOrder []string `json:"home_module_order"`
-	PrimaryBrandID *uint    `json:"primary_brand_id"`
-	PreviewImage   string   `json:"preview_image"`
-	LogoImage      string   `json:"logo_image"`
-	AccentColor    string   `json:"accent_color"`
-	AccentStrongColor string `json:"accent_strong_color"`
-	SurfaceColor   string   `json:"surface_color"`
-	PageBgColor    string   `json:"page_bg_color"`
-	CardBgColor    string   `json:"card_bg_color"`
-	TextColor      string   `json:"text_color"`
-	MutedTextColor string   `json:"muted_text_color"`
-	BorderColor    string   `json:"border_color"`
-	HeroBgColor    string   `json:"hero_bg_color"`
-	TagBgColor     string   `json:"tag_bg_color"`
-	HeroTitle      string   `json:"hero_title"`
-	Tagline        string   `json:"tagline"`
-	Announcement   string   `json:"announcement"`
-	SupportText    string   `json:"support_text"`
-	SEOTitle       string   `json:"seo_title"`
-	SEODescription string   `json:"seo_description"`
+	ID                uint                `json:"id"`
+	Domain            string              `json:"domain"`
+	BoundDomains      []string            `json:"bound_domains"`
+	NPMProxyHostID    *uint               `json:"npm_proxy_host_id"`
+	Name              string              `json:"name"`
+	IsActive          bool                `json:"is_active"`
+	Theme             string              `json:"theme"`
+	HomeTemplate      string              `json:"home_template"`
+	HomeModuleOrder   []string            `json:"home_module_order"`
+	HomeBanner        homeBannerConfig    `json:"home_banner"`
+	HomeSections      []homeSectionConfig `json:"home_sections"`
+	PrimaryBrandID    *uint               `json:"primary_brand_id"`
+	PreviewImage      string              `json:"preview_image"`
+	LogoImage         string              `json:"logo_image"`
+	AccentColor       string              `json:"accent_color"`
+	AccentStrongColor string              `json:"accent_strong_color"`
+	SurfaceColor      string              `json:"surface_color"`
+	PageBgColor       string              `json:"page_bg_color"`
+	CardBgColor       string              `json:"card_bg_color"`
+	TextColor         string              `json:"text_color"`
+	MutedTextColor    string              `json:"muted_text_color"`
+	BorderColor       string              `json:"border_color"`
+	HeroBgColor       string              `json:"hero_bg_color"`
+	TagBgColor        string              `json:"tag_bg_color"`
+	HeroTitle         string              `json:"hero_title"`
+	Tagline           string              `json:"tagline"`
+	Announcement      string              `json:"announcement"`
+	SupportText       string              `json:"support_text"`
+	SEOTitle          string              `json:"seo_title"`
+	SEODescription    string              `json:"seo_description"`
+}
+
+type tenantDomainPayload struct {
+	Domain string `json:"domain"`
+}
+
+type tenantDomainOperationResponse struct {
+	TenantResponse tenantResponse       `json:"tenant"`
+	NPMResult      *service.NPMResult   `json:"npm_result,omitempty"`
+}
+
+type homeBannerConfig struct {
+	Enabled    bool   `json:"enabled"`
+	Title      string `json:"title"`
+	Subtitle   string `json:"subtitle"`
+	Image      string `json:"image"`
+	Link       string `json:"link"`
+	ButtonText string `json:"button_text"`
+}
+
+type homeSectionConfig struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Enabled bool   `json:"enabled"`
+	Title   string `json:"title"`
+	Limit   int    `json:"limit"`
 }
 
 type platformConfigPayload struct {
@@ -651,6 +686,24 @@ type brandResponse struct {
 	Description string `json:"description"`
 }
 
+type adminLoginPayload struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type adminUserResponse struct {
+	ID          uint   `json:"id"`
+	Username    string `json:"username"`
+	Name        string `json:"name"`
+	IsActive    bool   `json:"is_active"`
+	LastLoginAt string `json:"last_login_at,omitempty"`
+}
+
+type adminLoginResponse struct {
+	Token string            `json:"token"`
+	User  adminUserResponse `json:"user"`
+}
+
 type uploadImageResponse struct {
 	URL string `json:"url"`
 }
@@ -855,6 +908,18 @@ func jsonUint(source models.JSONMap, key string) *uint {
 		}
 		converted := value
 		return &converted
+	case *uint:
+		if value == nil || *value == 0 {
+			return nil
+		}
+		converted := *value
+		return &converted
+	case *int:
+		if value == nil || *value <= 0 {
+			return nil
+		}
+		converted := uint(*value)
+		return &converted
 	}
 	return nil
 }
@@ -935,6 +1000,119 @@ func jsonStringSlice(source models.JSONMap, key string, fallback []string) []str
 	}
 	if len(result) == 0 {
 		return fallback
+	}
+	return result
+}
+
+func jsonBool(source models.JSONMap, key string, fallback bool) bool {
+	if source == nil {
+		return fallback
+	}
+	switch value := source[key].(type) {
+	case bool:
+		return value
+	case string:
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "true", "1", "yes":
+			return true
+		case "false", "0", "no":
+			return false
+		}
+	}
+	return fallback
+}
+
+func jsonMap(source models.JSONMap, key string) models.JSONMap {
+	if source == nil {
+		return nil
+	}
+	raw, exists := source[key]
+	if !exists || raw == nil {
+		return nil
+	}
+	if typed, ok := raw.(map[string]interface{}); ok {
+		return models.JSONMap(typed)
+	}
+	if typed, ok := raw.(models.JSONMap); ok {
+		return typed
+	}
+	return nil
+}
+
+func jsonSectionConfigs(source models.JSONMap, key string) []homeSectionConfig {
+	if source == nil {
+		return []homeSectionConfig{}
+	}
+	raw, ok := source[key].([]interface{})
+	if !ok {
+		return []homeSectionConfig{}
+	}
+
+	result := make([]homeSectionConfig, 0, len(raw))
+	for index, item := range raw {
+		entry, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		config := homeSectionConfig{
+			ID:      firstNonEmptyString(jsonString(models.JSONMap(entry), "id", "")),
+			Type:    strings.TrimSpace(jsonString(models.JSONMap(entry), "type", "")),
+			Enabled: jsonBool(models.JSONMap(entry), "enabled", true),
+			Title:   strings.TrimSpace(jsonString(models.JSONMap(entry), "title", "")),
+			Limit:   jsonInt(models.JSONMap(entry), "limit", 0),
+		}
+
+		if config.Type == "" {
+			continue
+		}
+		if config.ID == "" {
+			config.ID = fmt.Sprintf("%s-%d", config.Type, index+1)
+		}
+		if config.Limit < 0 {
+			config.Limit = 0
+		}
+		result = append(result, config)
+	}
+	return result
+}
+
+func normalizeHomeBannerConfig(input homeBannerConfig) homeBannerConfig {
+	return homeBannerConfig{
+		Enabled:    input.Enabled,
+		Title:      strings.TrimSpace(input.Title),
+		Subtitle:   strings.TrimSpace(input.Subtitle),
+		Image:      strings.TrimSpace(input.Image),
+		Link:       strings.TrimSpace(input.Link),
+		ButtonText: strings.TrimSpace(input.ButtonText),
+	}
+}
+
+func normalizeHomeSectionConfigs(sections []homeSectionConfig) []homeSectionConfig {
+	result := make([]homeSectionConfig, 0, len(sections))
+	seen := make(map[string]struct{}, len(sections))
+	for index, section := range sections {
+		normalized := homeSectionConfig{
+			ID:      strings.TrimSpace(section.ID),
+			Type:    strings.TrimSpace(section.Type),
+			Enabled: section.Enabled,
+			Title:   strings.TrimSpace(section.Title),
+			Limit:   section.Limit,
+		}
+		if normalized.Type == "" {
+			continue
+		}
+		if normalized.ID == "" {
+			normalized.ID = fmt.Sprintf("%s-%d", normalized.Type, index+1)
+		}
+		if _, exists := seen[normalized.ID]; exists {
+			continue
+		}
+		seen[normalized.ID] = struct{}{}
+		if normalized.Limit < 0 {
+			normalized.Limit = 0
+		}
+		result = append(result, normalized)
 	}
 	return result
 }
@@ -1611,34 +1789,47 @@ func normalizedVariantLabel(value string) string {
 }
 
 func tenantToResponse(tenant models.Tenant) tenantResponse {
+	homeBannerMap := jsonMap(tenant.ThemeConfig, "homeBanner")
+	homeBanner := homeBannerConfig{
+		Enabled:    jsonBool(homeBannerMap, "enabled", false),
+		Title:      jsonString(homeBannerMap, "title", ""),
+		Subtitle:   jsonString(homeBannerMap, "subtitle", ""),
+		Image:      jsonString(homeBannerMap, "image", ""),
+		Link:       jsonString(homeBannerMap, "link", ""),
+		ButtonText: jsonString(homeBannerMap, "buttonText", ""),
+	}
+
 	return tenantResponse{
-		ID:             tenant.ID,
-		Domain:         tenant.Domain,
-		BoundDomains:   jsonArrayToStrings(tenant.BoundDomains),
-		Name:           tenant.Name,
-		IsActive:       tenant.IsActive,
-		Theme:          jsonString(tenant.ThemeConfig, "theme", ""),
-		HomeTemplate:   jsonString(tenant.ThemeConfig, "homeTemplate", ""),
+		ID:              tenant.ID,
+		Domain:          tenant.Domain,
+		BoundDomains:    jsonArrayToStrings(tenant.BoundDomains),
+		NPMProxyHostID:  jsonUint(tenant.ThemeConfig, "npmProxyHostId"),
+		Name:            tenant.Name,
+		IsActive:        tenant.IsActive,
+		Theme:           jsonString(tenant.ThemeConfig, "theme", ""),
+		HomeTemplate:    jsonString(tenant.ThemeConfig, "homeTemplate", ""),
 		HomeModuleOrder: jsonStringSlice(tenant.ThemeConfig, "homeModuleOrder", []string{}),
-		PrimaryBrandID: jsonUint(tenant.ThemeConfig, "primaryBrandId"),
-		PreviewImage:   jsonString(tenant.ThemeConfig, "previewImage", ""),
-		LogoImage:      jsonString(tenant.ThemeConfig, "logoImage", ""),
-		AccentColor:    jsonString(tenant.ThemeConfig, "accentColor", ""),
+		HomeBanner:      homeBanner,
+		HomeSections:    jsonSectionConfigs(tenant.ThemeConfig, "homeSections"),
+		PrimaryBrandID:  jsonUint(tenant.ThemeConfig, "primaryBrandId"),
+		PreviewImage:    jsonString(tenant.ThemeConfig, "previewImage", ""),
+		LogoImage:       jsonString(tenant.ThemeConfig, "logoImage", ""),
+		AccentColor:     jsonString(tenant.ThemeConfig, "accentColor", ""),
 		AccentStrongColor: jsonString(tenant.ThemeConfig, "accentStrongColor", ""),
-		SurfaceColor:   jsonString(tenant.ThemeConfig, "surfaceColor", ""),
-		PageBgColor:    jsonString(tenant.ThemeConfig, "pageBgColor", ""),
-		CardBgColor:    jsonString(tenant.ThemeConfig, "cardBgColor", ""),
-		TextColor:      jsonString(tenant.ThemeConfig, "textColor", ""),
-		MutedTextColor: jsonString(tenant.ThemeConfig, "mutedTextColor", ""),
-		BorderColor:    jsonString(tenant.ThemeConfig, "borderColor", ""),
-		HeroBgColor:    jsonString(tenant.ThemeConfig, "heroBgColor", ""),
-		TagBgColor:     jsonString(tenant.ThemeConfig, "tagBgColor", ""),
-		HeroTitle:      jsonString(tenant.ThemeConfig, "heroTitle", ""),
-		Tagline:        jsonString(tenant.ThemeConfig, "tagline", ""),
-		Announcement:   jsonString(tenant.ThemeConfig, "announcement", ""),
-		SupportText:    jsonString(tenant.ThemeConfig, "supportText", ""),
-		SEOTitle:       jsonString(tenant.SEOConfig, "title", ""),
-		SEODescription: jsonString(tenant.SEOConfig, "description", ""),
+		SurfaceColor:     jsonString(tenant.ThemeConfig, "surfaceColor", ""),
+		PageBgColor:      jsonString(tenant.ThemeConfig, "pageBgColor", ""),
+		CardBgColor:      jsonString(tenant.ThemeConfig, "cardBgColor", ""),
+		TextColor:        jsonString(tenant.ThemeConfig, "textColor", ""),
+		MutedTextColor:   jsonString(tenant.ThemeConfig, "mutedTextColor", ""),
+		BorderColor:      jsonString(tenant.ThemeConfig, "borderColor", ""),
+		HeroBgColor:      jsonString(tenant.ThemeConfig, "heroBgColor", ""),
+		TagBgColor:       jsonString(tenant.ThemeConfig, "tagBgColor", ""),
+		HeroTitle:        jsonString(tenant.ThemeConfig, "heroTitle", ""),
+		Tagline:          jsonString(tenant.ThemeConfig, "tagline", ""),
+		Announcement:     jsonString(tenant.ThemeConfig, "announcement", ""),
+		SupportText:      jsonString(tenant.ThemeConfig, "supportText", ""),
+		SEOTitle:         jsonString(tenant.SEOConfig, "title", ""),
+		SEODescription:   jsonString(tenant.SEOConfig, "description", ""),
 	}
 }
 
@@ -1661,26 +1852,36 @@ func tenantPayloadToModel(payload tenantPayload, existing *models.Tenant) models
 	model.Name = payload.Name
 	model.IsActive = payload.IsActive
 	model.ThemeConfig = models.JSONMap{
-		"theme":        payload.Theme,
-		"homeTemplate": payload.HomeTemplate,
+		"theme":           payload.Theme,
+		"homeTemplate":    payload.HomeTemplate,
 		"homeModuleOrder": payload.HomeModuleOrder,
-		"primaryBrandId": payload.PrimaryBrandID,
-		"previewImage": payload.PreviewImage,
-		"logoImage":    payload.LogoImage,
-		"accentColor":  payload.AccentColor,
+		"npmProxyHostId":  payload.NPMProxyHostID,
+		"homeBanner": models.JSONMap{
+			"enabled":    payload.HomeBanner.Enabled,
+			"title":      payload.HomeBanner.Title,
+			"subtitle":   payload.HomeBanner.Subtitle,
+			"image":      payload.HomeBanner.Image,
+			"link":       payload.HomeBanner.Link,
+			"buttonText": payload.HomeBanner.ButtonText,
+		},
+		"homeSections":      normalizeHomeSectionConfigs(payload.HomeSections),
+		"primaryBrandId":    payload.PrimaryBrandID,
+		"previewImage":      payload.PreviewImage,
+		"logoImage":         payload.LogoImage,
+		"accentColor":       payload.AccentColor,
 		"accentStrongColor": payload.AccentStrongColor,
-		"surfaceColor": payload.SurfaceColor,
-		"pageBgColor":  payload.PageBgColor,
-		"cardBgColor":  payload.CardBgColor,
-		"textColor":    payload.TextColor,
+		"surfaceColor":      payload.SurfaceColor,
+		"pageBgColor":       payload.PageBgColor,
+		"cardBgColor":       payload.CardBgColor,
+		"textColor":         payload.TextColor,
 		"mutedTextColor": payload.MutedTextColor,
-		"borderColor":  payload.BorderColor,
-		"heroBgColor":  payload.HeroBgColor,
-		"tagBgColor":   payload.TagBgColor,
-		"heroTitle":    payload.HeroTitle,
-		"tagline":      payload.Tagline,
-		"announcement": payload.Announcement,
-		"supportText":  payload.SupportText,
+		"borderColor":       payload.BorderColor,
+		"heroBgColor":       payload.HeroBgColor,
+		"tagBgColor":        payload.TagBgColor,
+		"heroTitle":         payload.HeroTitle,
+		"tagline":           payload.Tagline,
+		"announcement":      payload.Announcement,
+		"supportText":       payload.SupportText,
 	}
 	model.SEOConfig = models.JSONMap{
 		"title":       payload.SEOTitle,
@@ -2099,6 +2300,93 @@ func validateTenantDomains(db *gorm.DB, tenantID uint, primaryDomain string, bou
 	return nil
 }
 
+func ensureDomainExists(db *gorm.DB, domain string) error {
+	normalized := normalizeDomain(domain)
+	if normalized == "" {
+		return errors.New("domain is required")
+	}
+
+	var count int64
+	if err := db.Model(&models.Domain{}).Where("LOWER(domain_name) = ?", normalized).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return errors.New("domain not found in domain registry: " + normalized)
+	}
+	return nil
+}
+
+func addUniqueDomain(values []string, domain string) []string {
+	normalized := normalizeDomain(domain)
+	if normalized == "" {
+		return normalizeDomainList(values)
+	}
+
+	result := normalizeDomainList(values)
+	for _, item := range result {
+		if item == normalized {
+			return result
+		}
+	}
+	return append(result, normalized)
+}
+
+func removeDomainFromList(values []string, domain string) ([]string, bool) {
+	normalized := normalizeDomain(domain)
+	if normalized == "" {
+		return normalizeDomainList(values), false
+	}
+
+	result := make([]string, 0, len(values))
+	found := false
+	for _, item := range normalizeDomainList(values) {
+		if item == normalized {
+			found = true
+			continue
+		}
+		result = append(result, item)
+	}
+	return result, found
+}
+
+func syncTenantDomainsToNPM(cfg *config.Config, primaryDomain string, boundDomains []string) (*service.NPMResult, error) {
+	npmService, err := service.NewNPMService(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return npmService.UpdateDomainsAndSSL(primaryDomain, boundDomains)
+}
+
+func syncTenantDomainsToNPMByProxyHostID(cfg *config.Config, proxyHostID uint, primaryDomain string, boundDomains []string) (*service.NPMResult, error) {
+	npmService, err := service.NewNPMService(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return npmService.UpdateProxyHostDomainsByID(proxyHostID, primaryDomain, boundDomains)
+}
+
+func ensureSuccessfulNPMResult(result *service.NPMResult) error {
+	if result == nil {
+		return errors.New("NPM sync returned an empty response")
+	}
+	if result.Status == "success" && result.NPMUpdated {
+		return nil
+	}
+
+	message := strings.TrimSpace(result.Message)
+	if message == "" {
+		message = "NPM sync failed"
+	}
+
+	if result.ProxyHostID != nil {
+		message += fmt.Sprintf(" (proxy_host_id=%v)", result.ProxyHostID)
+	}
+	if len(result.UpdatedDomains) > 0 {
+		message += fmt.Sprintf(" [domains=%s]", strings.Join(result.UpdatedDomains, ", "))
+	}
+	return errors.New(message)
+}
+
 func orderToResponse(order models.Order, items []models.OrderItem, productNameByID map[uint]string) orderResponse {
 	result := make([]orderItemResponse, 0, len(items))
 	for _, item := range items {
@@ -2153,6 +2441,88 @@ func LogoutHandler() gin.HandlerFunc {
 func GetCurrentUserHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "Get current user endpoint"})
+	}
+}
+
+func adminUserToResponse(user models.AdminUser) adminUserResponse {
+	response := adminUserResponse{
+		ID:       user.ID,
+		Username: user.Username,
+		Name:     user.Name,
+		IsActive: user.IsActive,
+	}
+	if user.LastLoginAt != nil {
+		response.LastLoginAt = user.LastLoginAt.Format(time.RFC3339)
+	}
+	return response
+}
+
+func AdminLoginHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var payload adminLoginPayload
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid login payload"})
+			return
+		}
+
+		username := strings.TrimSpace(strings.ToLower(payload.Username))
+		password := strings.TrimSpace(payload.Password)
+		if username == "" || password == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Username and password are required"})
+			return
+		}
+
+		var adminUser models.AdminUser
+		if err := db.Where("username = ?", username).Take(&adminUser).Error; err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+			return
+		}
+		if !adminUser.IsActive {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Admin account is disabled"})
+			return
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(adminUser.PasswordHash), []byte(password)); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+			return
+		}
+
+		now := time.Now()
+		token, err := middleware.CreateAdminToken(adminUser.ID, cfg.JWTSecret, now)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create auth token"})
+			return
+		}
+		_ = db.Model(&adminUser).Update("last_login_at", now).Error
+		adminUser.LastLoginAt = &now
+
+		c.JSON(http.StatusOK, adminLoginResponse{
+			Token: token,
+			User:  adminUserToResponse(adminUser),
+		})
+	}
+}
+
+func AdminLogoutHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	}
+}
+
+func GetCurrentAdminUserHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		value, exists := c.Get("admin_user")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		adminUser, ok := value.(models.AdminUser)
+		if !ok {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Admin context invalid"})
+			return
+		}
+
+		c.JSON(http.StatusOK, adminUserToResponse(adminUser))
 	}
 }
 
@@ -3501,6 +3871,198 @@ func DeleteTenantHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
+	}
+}
+
+func AddTenantDomainHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tenantID, err := getUintParam(c, "id")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
+			return
+		}
+
+		var payload tenantDomainPayload
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid domain payload"})
+			return
+		}
+
+		domain := normalizeDomain(payload.Domain)
+		if domain == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Domain is required"})
+			return
+		}
+		if err := ensureDomainExists(db, domain); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		var tenant models.Tenant
+		if err := db.First(&tenant, tenantID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Tenant not found"})
+			return
+		}
+
+		currentPrimary := normalizeDomain(tenant.Domain)
+		currentBound := jsonArrayToStrings(tenant.BoundDomains)
+		if domain == currentPrimary {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Domain is already the primary domain"})
+			return
+		}
+		for _, item := range currentBound {
+			if normalizeDomain(item) == domain {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Domain is already bound to the tenant"})
+				return
+			}
+		}
+
+		updatedBound := addUniqueDomain(currentBound, domain)
+		if err := validateTenantDomains(db, tenantID, currentPrimary, updatedBound); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		tenant.BoundDomains = stringSliceToJSONArray(updatedBound)
+		if err := db.Save(&tenant).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bind tenant domain"})
+			return
+		}
+
+		npmProxyHostID := jsonUint(tenant.ThemeConfig, "npmProxyHostId")
+		var npmResult *service.NPMResult
+		var syncErr error
+		if npmProxyHostID != nil && *npmProxyHostID > 0 {
+			npmResult, syncErr = syncTenantDomainsToNPMByProxyHostID(cfg, *npmProxyHostID, tenant.Domain, jsonArrayToStrings(tenant.BoundDomains))
+		} else {
+			npmResult, syncErr = syncTenantDomainsToNPM(cfg, tenant.Domain, jsonArrayToStrings(tenant.BoundDomains))
+		}
+		if syncErr != nil {
+			npmResult = &service.NPMResult{
+				Status:     "error",
+				Message:    syncErr.Error(),
+				NPMUpdated: false,
+			}
+		}
+
+		c.JSON(http.StatusOK, tenantDomainOperationResponse{
+			TenantResponse: tenantToResponse(tenant),
+			NPMResult:      npmResult,
+		})
+	}
+}
+
+func RemoveTenantDomainHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tenantID, err := getUintParam(c, "id")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
+			return
+		}
+
+		domain := normalizeDomain(c.Param("domain"))
+		if domain == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Domain is required"})
+			return
+		}
+
+		var tenant models.Tenant
+		if err := db.First(&tenant, tenantID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Tenant not found"})
+			return
+		}
+
+		if domain == normalizeDomain(tenant.Domain) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Primary domain cannot be removed directly"})
+			return
+		}
+
+		updatedBound, found := removeDomainFromList(jsonArrayToStrings(tenant.BoundDomains), domain)
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Bound domain not found"})
+			return
+		}
+		if err := validateTenantDomains(db, tenantID, normalizeDomain(tenant.Domain), updatedBound); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		tenant.BoundDomains = stringSliceToJSONArray(updatedBound)
+		if err := db.Save(&tenant).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove tenant domain"})
+			return
+		}
+
+		npmResult, syncErr := syncTenantDomainsToNPM(cfg, tenant.Domain, jsonArrayToStrings(tenant.BoundDomains))
+		if syncErr != nil {
+			npmResult = &service.NPMResult{
+				Status:     "error",
+				Message:    syncErr.Error(),
+				NPMUpdated: false,
+			}
+		}
+
+		c.JSON(http.StatusOK, tenantDomainOperationResponse{
+			TenantResponse: tenantToResponse(tenant),
+			NPMResult:      npmResult,
+		})
+	}
+}
+
+func SetTenantPrimaryDomainHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tenantID, err := getUintParam(c, "id")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
+			return
+		}
+
+		domain := normalizeDomain(c.Param("domain"))
+		if domain == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Domain is required"})
+			return
+		}
+		if err := ensureDomainExists(db, domain); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		var tenant models.Tenant
+		if err := db.First(&tenant, tenantID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Tenant not found"})
+			return
+		}
+
+		currentPrimary := normalizeDomain(tenant.Domain)
+		if domain == currentPrimary {
+			c.JSON(http.StatusOK, tenantToResponse(tenant))
+			return
+		}
+
+		currentBound := jsonArrayToStrings(tenant.BoundDomains)
+		updatedBound, found := removeDomainFromList(currentBound, domain)
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Bound domain not found"})
+			return
+		}
+		if currentPrimary != "" {
+			updatedBound = addUniqueDomain(updatedBound, currentPrimary)
+		}
+		if err := validateTenantDomains(db, tenantID, domain, updatedBound); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		tenant.Domain = domain
+		tenant.BoundDomains = stringSliceToJSONArray(updatedBound)
+		if err := db.Save(&tenant).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update tenant primary domain"})
+			return
+		}
+
+		c.JSON(http.StatusOK, tenantDomainOperationResponse{
+			TenantResponse: tenantToResponse(tenant),
+		})
 	}
 }
 

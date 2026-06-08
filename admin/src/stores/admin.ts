@@ -1,7 +1,8 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { adminAPI } from '@/api/admin'
+import { adminAPI, clearAdminAuthToken, getAdminAuthToken, setAdminAuthToken } from '@/api/admin'
 import {
+  type AdminAuthUserRecord,
   type BrandRecord,
   type CategoryRecord,
   type OrderRecord,
@@ -12,6 +13,9 @@ import {
 } from '@/data/adminMock'
 
 export const useAdminStore = defineStore('admin', () => {
+  const authUser = ref<AdminAuthUserRecord | null>(null)
+  const authReady = ref(false)
+  const authLoading = ref(false)
   const tenants = ref<TenantRecord[]>([])
   const products = ref<ProductRecord[]>([])
   const categories = ref<CategoryRecord[]>([])
@@ -31,11 +35,70 @@ export const useAdminStore = defineStore('admin', () => {
 
   const activeTenants = computed(() => tenants.value.filter((tenant) => tenant.isActive))
   const visibleOverrides = computed(() => overrides.value.filter((item) => item.isVisible))
+  const isAuthenticated = computed(() => Boolean(authUser.value && getAdminAuthToken()))
+
+  function handleAuthFailure(error: unknown) {
+    if (error instanceof Error && /401|Authentication required|Invalid or expired token|Admin account not found/i.test(error.message)) {
+      clearSession()
+    }
+  }
+
+  async function login(username: string, password: string) {
+    authLoading.value = true
+    try {
+      const result = await adminAPI.login(username, password)
+      setAdminAuthToken(result.token)
+      authUser.value = result.user
+      authReady.value = true
+      return result.user
+    } finally {
+      authLoading.value = false
+    }
+  }
+
+  async function hydrateAuth() {
+    if (!getAdminAuthToken()) {
+      authUser.value = null
+      authReady.value = true
+      return
+    }
+
+    authLoading.value = true
+    try {
+      authUser.value = await adminAPI.getCurrentAdminUser()
+    } catch (error) {
+      handleAuthFailure(error)
+      throw error
+    } finally {
+      authLoading.value = false
+      authReady.value = true
+    }
+  }
+
+  async function logout() {
+    try {
+      if (getAdminAuthToken()) {
+        await adminAPI.logout()
+      }
+    } catch {
+      // Ignore logout request failures; local session cleanup is sufficient.
+    } finally {
+      clearSession()
+    }
+  }
+
+  function clearSession() {
+    clearAdminAuthToken()
+    authUser.value = null
+  }
 
   async function fetchTenants() {
     loading.value = true
     try {
       tenants.value = await adminAPI.getTenants()
+    } catch (error) {
+      handleAuthFailure(error)
+      throw error
     } finally {
       loading.value = false
     }
@@ -45,6 +108,9 @@ export const useAdminStore = defineStore('admin', () => {
     loading.value = true
     try {
       products.value = await adminAPI.getProducts()
+    } catch (error) {
+      handleAuthFailure(error)
+      throw error
     } finally {
       loading.value = false
     }
@@ -54,6 +120,9 @@ export const useAdminStore = defineStore('admin', () => {
     loading.value = true
     try {
       platformConfig.value = await adminAPI.getPlatformConfig()
+    } catch (error) {
+      handleAuthFailure(error)
+      throw error
     } finally {
       loading.value = false
     }
@@ -90,6 +159,9 @@ export const useAdminStore = defineStore('admin', () => {
     try {
       orders.value = await adminAPI.getOrders()
       return orders.value
+    } catch (error) {
+      handleAuthFailure(error)
+      throw error
     } finally {
       loading.value = false
     }
@@ -105,6 +177,7 @@ export const useAdminStore = defineStore('admin', () => {
     const updated = await adminAPI.updateTenant(payload.id, {
       domain: payload.domain,
       boundDomains: payload.boundDomains,
+      npmProxyHostId: payload.npmProxyHostId,
       name: payload.name,
       isActive: payload.isActive,
       theme: payload.theme,
@@ -129,11 +202,42 @@ export const useAdminStore = defineStore('admin', () => {
       supportText: payload.supportText,
       seoTitle: payload.seoTitle,
       seoDescription: payload.seoDescription,
+      homeBanner: payload.homeBanner,
+      homeSections: payload.homeSections,
     })
     const index = tenants.value.findIndex((item) => item.id === payload.id)
     if (index >= 0) {
       tenants.value[index] = updated
     }
+    return updated
+  }
+
+  function replaceTenant(updated: TenantRecord) {
+    const index = tenants.value.findIndex((item) => item.id === updated.id)
+    if (index >= 0) {
+      tenants.value[index] = updated
+    } else {
+      tenants.value.unshift(updated)
+    }
+    return updated
+  }
+
+  async function addTenantDomain(tenantId: number, domain: string) {
+    const result = await adminAPI.addTenantDomain(tenantId, domain)
+    replaceTenant(result.tenant)
+    return result
+  }
+
+  async function removeTenantDomain(tenantId: number, domain: string) {
+    const result = await adminAPI.removeTenantDomain(tenantId, domain)
+    replaceTenant(result.tenant)
+    return result
+  }
+
+  async function setTenantPrimaryDomain(tenantId: number, domain: string) {
+    const result = await adminAPI.setTenantPrimaryDomain(tenantId, domain)
+    replaceTenant(result.tenant)
+    return result
   }
 
   async function updatePlatformConfig(payload: PlatformConfigRecord) {
@@ -316,10 +420,17 @@ export const useAdminStore = defineStore('admin', () => {
   }
 
   async function bootstrap() {
+    if (!isAuthenticated.value) {
+      return
+    }
     await Promise.all([fetchTenants(), fetchProducts(), fetchPlatformConfig(), fetchOrders()])
   }
 
   return {
+    authUser,
+    authReady,
+    authLoading,
+    isAuthenticated,
     tenants,
     products,
     categories,
@@ -330,6 +441,10 @@ export const useAdminStore = defineStore('admin', () => {
     loading,
     activeTenants,
     visibleOverrides,
+    login,
+    hydrateAuth,
+    logout,
+    clearSession,
     fetchTenants,
     fetchProducts,
     fetchPlatformConfig,
@@ -339,6 +454,9 @@ export const useAdminStore = defineStore('admin', () => {
     fetchOrders,
     createTenant,
     updateTenant,
+    addTenantDomain,
+    removeTenantDomain,
+    setTenantPrimaryDomain,
     updatePlatformConfig,
     deleteTenant,
     createProduct,

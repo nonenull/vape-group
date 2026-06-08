@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import ProductCard from '~/components/store/ProductCard.vue'
-import { createItemListJsonLd, createStoreJsonLd, useStoreSeo } from '~/composables/useStoreSeo'
 import { fetchBrands, fetchCategories, fetchProducts } from '~/composables/useStoreApi'
-import { buildCategoryPath } from '~/composables/useProductSlug'
-import { buildProductPath } from '~/composables/useProductSlug'
+import { buildCategoryPath, buildProductPath } from '~/composables/useProductSlug'
+import { createItemListJsonLd, createStoreJsonLd, useStoreSeo } from '~/composables/useStoreSeo'
+import type { HomeSectionConfig } from '~/types/store'
+
+const generatedBannerImage = '/generated/ig_04c0f9fe9013d072016a1936ee03348191bae85cbc14a15435.png'
 
 const tenantStore = useTenantStore()
 await tenantStore.initTenant()
@@ -17,9 +19,7 @@ const [{ products }, categories, brands] = await Promise.all([
 
 const tenant = tenantStore.currentTenant
 const tenantName = tenant?.name ?? 'Vape Group 商城'
-const homeModuleDefaults = ['products', 'categories', 'brands'] as const
-type HomeModuleKey = typeof homeModuleDefaults[number]
-const homeModuleSet = new Set<HomeModuleKey>(homeModuleDefaults)
+const categoryMap = new Map(categories.map((category) => [category.id, category]))
 
 const primaryBrand = computed(() => {
   if (!tenant?.primaryBrandId) {
@@ -28,6 +28,14 @@ const primaryBrand = computed(() => {
   return brands.find((brand) => brand.id === tenant.primaryBrandId) ?? null
 })
 
+function getCategoryIds(product: (typeof products)[number]) {
+  return product.categoryIds?.length
+    ? product.categoryIds
+    : product.categoryId != null
+      ? [product.categoryId]
+      : []
+}
+
 const primaryBrandProducts = computed(() => {
   if (!primaryBrand.value) {
     return []
@@ -35,62 +43,57 @@ const primaryBrandProducts = computed(() => {
   return products.filter((product) => product.brand === primaryBrand.value?.name)
 })
 
-const categoryMap = new Map(categories.map((category) => [category.id, category]))
-
-const configuredPrimaryCategoryCards = [
-  { key: 'device', title: '煙桿', keywords: ['煙桿', '烟杆', '主機', '主机', '設備', '设备', 'pod 系統', '套裝', '套装', 'kit', 'device'] },
-  { key: 'pod', title: '煙彈', keywords: ['煙彈', '烟弹', 'pod', '彈', '弹'] },
-  { key: 'disposable', title: '拋棄式電子煙', keywords: ['拋棄式', '一次性', '電子煙', '电子烟', 'disposable'] },
-] as const
-
-function findMatchingCategoryId(keywords: readonly string[]) {
-  const match = categories.find((category) => {
-    const categoryName = category.name.trim().toLowerCase()
-    return keywords.some((keyword) => categoryName.includes(keyword.toLowerCase()))
-  })
-  return match?.id ?? null
+function getHotProductScore(product: (typeof products)[number]) {
+  const badgeWeight = product.badge?.trim() ? 18 : 0
+  const reviewWeight = Math.min(product.reviews, 220)
+  const ratingWeight = product.rating * 14
+  const stockWeight = product.stock > 0 ? 8 : 0
+  return badgeWeight + reviewWeight + ratingWeight + stockWeight
 }
 
-const primaryCategoryCards = computed(() =>
-  configuredPrimaryCategoryCards.map((group) => {
-    const categoryId = findMatchingCategoryId(group.keywords)
-    const items = categoryId == null
-      ? []
-      : primaryBrandProducts.value
-        .filter((product) => {
-          const productCategoryIds = product.categoryIds?.length
-            ? product.categoryIds
-            : product.categoryId != null
-              ? [product.categoryId]
-              : []
-          return productCategoryIds.includes(categoryId)
-        })
-        .slice(0, 4)
-    return {
-      key: group.key,
-      title: group.title,
-      categoryId,
-      categoryName: categoryId != null ? categoryMap.get(categoryId)?.name ?? '' : '',
-      items,
-    }
-  }),
+const hotProducts = computed(() =>
+  [...products]
+    .sort((left, right) => {
+      const scoreDifference = getHotProductScore(right) - getHotProductScore(left)
+      if (scoreDifference !== 0) {
+        return scoreDifference
+      }
+      return right.id - left.id
+    })
+    .slice(0, 8),
 )
 
-const featuredCategoryIds = tenantStore.platformConfig.featuredCategoryIds
+function getStableBrandRandomScore(brandId: number) {
+  const baseSeed = `${tenant?.id ?? 0}-${tenant?.primaryBrandId ?? 0}-${brandId}`
+  let hash = 0
+  for (let index = 0; index < baseSeed.length; index += 1) {
+    hash = (hash * 31 + baseSeed.charCodeAt(index)) >>> 0
+  }
+  return hash
+}
+
+const featuredBrands = computed(() =>
+  brands
+    .filter((brand) => brand.id !== primaryBrand.value?.id)
+    .sort((left, right) => {
+      const scoreDifference = getStableBrandRandomScore(left.id) - getStableBrandRandomScore(right.id)
+      if (scoreDifference !== 0) {
+        return scoreDifference
+      }
+      return left.id - right.id
+    })
+    .slice(0, 8),
+)
+
 const categoryCountMap = products.reduce((map, product) => {
-  const productCategoryIds = product.categoryIds?.length
-    ? product.categoryIds
-    : product.categoryId != null
-      ? [product.categoryId]
-      : []
-  for (const categoryId of productCategoryIds) {
+  for (const categoryId of getCategoryIds(product)) {
     map.set(categoryId, (map.get(categoryId) ?? 0) + 1)
   }
   return map
 }, new Map<number, number>())
 
 const featuredCategories = computed(() => {
-  const configured = featuredCategoryIds.filter((id) => categoryMap.has(id))
+  const configured = tenantStore.platformConfig.featuredCategoryIds.filter((id) => categoryMap.has(id))
   const fallback = categories
     .filter((category) => (categoryCountMap.get(category.id) ?? 0) > 0)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)
@@ -112,108 +115,73 @@ const featuredCategories = computed(() => {
     .filter((item): item is NonNullable<typeof item> => item !== null)
 })
 
-function getStableBrandRandomScore(brandId: number) {
-  const baseSeed = `${tenant?.id ?? 0}-${tenant?.primaryBrandId ?? 0}-${brandId}`
-  let hash = 0
-  for (let index = 0; index < baseSeed.length; index += 1) {
-    hash = (hash * 31 + baseSeed.charCodeAt(index)) >>> 0
-  }
-  return hash
-}
-
-const featuredBrands = computed(() =>
-  brands
-    .filter((brand) => brand.id !== primaryBrand.value?.id)
-    .sort((left, right) => {
-      const scoreDifference = getStableBrandRandomScore(left.id) - getStableBrandRandomScore(right.id)
-      if (scoreDifference !== 0) {
-        return scoreDifference
-      }
-      return left.id - right.id
-    })
-    .slice(0, 6),
-)
-
-function getSeasonalProductScore(product: (typeof products)[number]) {
-  const saleWeight = product.salePrice ? 50 : 0
-  const badgeWeight = product.badge?.trim() ? 20 : 0
-  const reviewWeight = Math.min(product.reviews, 200)
-  const ratingWeight = product.rating * 10
-  const stockWeight = product.stock > 0 ? 5 : 0
-  return saleWeight + badgeWeight + reviewWeight + ratingWeight + stockWeight
-}
-
-const seasonalProducts = computed(() =>
-  [...products]
-    .sort((left, right) => {
-      const scoreDifference = getSeasonalProductScore(right) - getSeasonalProductScore(left)
-      if (scoreDifference !== 0) {
-        return scoreDifference
-      }
-      return right.id - left.id
-    })
-    .slice(0, 8),
-)
-
-const orderedHomeModules = computed<HomeModuleKey[]>(() => {
-  const configured = (tenant?.homeModuleOrder ?? [])
-    .filter((item): item is HomeModuleKey => homeModuleSet.has(item as HomeModuleKey))
-    .filter((item, index, array) => array.indexOf(item) === index)
-
-  return [
-    ...configured,
-    ...homeModuleDefaults.filter((item) => !configured.includes(item)),
-  ]
-})
-
-const seoTitle = computed(() => {
-  if (tenant?.seoTitle?.trim()) {
-    return tenant.seoTitle.trim()
-  }
-  const primaryBrandName = primaryBrand.value?.name?.trim()
-  return primaryBrandName ? `${primaryBrandName} | ${tenantName}` : `${tenantName} | 商品首頁`
-})
-
-const seoDescription = computed(() => {
-  if (tenant?.seoDescription?.trim()) {
-    return tenant.seoDescription.trim()
-  }
-
-  const primaryBrandName = primaryBrand.value?.name?.trim()
-  const categorySummary = primaryCategoryCards.value
-    .map((card) => `${card.title}${card.items.length ? `${card.items.length}款` : ''}`)
-    .join('、')
-  const hotCategoryNames = featuredCategories.value.slice(0, 3).map((item) => item.name).join('、')
-  const otherBrandNames = featuredBrands.value.slice(0, 3).map((item) => item.name).join('、')
-
-  const segments = [
-    primaryBrandName ? `${primaryBrandName}主打${categorySummary || '商品專區'}` : `${tenantName}首頁商品專區`,
-    hotCategoryNames ? `熱門分類包含${hotCategoryNames}` : '',
-    otherBrandNames ? `其他品牌有${otherBrandNames}` : '',
-  ].filter(Boolean)
-
-  return segments.join('，') || tenant?.tagline || `${tenantName} 精選商品與品牌內容總覽。`
-})
-
-const convenienceTools = [
-  {
-    key: 'store-locator',
-    title: '7-11 門市查詢',
-    description: '查詢可取貨或寄件的 7-ELEVEN 門市資訊。',
-    href: 'https://emap.pcsc.com.tw/',
-  },
-  {
-    key: 'parcel-tracking',
-    title: '7-11 貨態查詢',
-    description: '輸入交貨便單號，快速查看包裹目前配送狀態。',
-    href: 'https://eservice.7-11.com.tw/E-Tracking/search.aspx',
-  },
+const configuredPrimaryCategoryCards = [
+  { key: 'device', title: '設備', keywords: ['煙桿', '烟杆', '主機', '主机', '設備', 'device', 'kit'] },
+  { key: 'pod', title: '煙彈', keywords: ['煙彈', '烟弹', 'pod', '彈', '弹'] },
+  { key: 'disposable', title: '拋棄式', keywords: ['拋棄式', '一次性', '電子煙', 'disposable'] },
 ] as const
+
+function findMatchingCategoryId(keywords: readonly string[]) {
+  const match = categories.find((category) => {
+    const categoryName = category.name.trim().toLowerCase()
+    return keywords.some((keyword) => categoryName.includes(keyword.toLowerCase()))
+  })
+  return match?.id ?? null
+}
+
+const primaryCategoryCards = computed(() =>
+  configuredPrimaryCategoryCards.map((group) => {
+    const categoryId = findMatchingCategoryId(group.keywords)
+    const items = categoryId == null
+      ? []
+      : primaryBrandProducts.value
+        .filter((product) => getCategoryIds(product).includes(categoryId))
+        .slice(0, 4)
+    return {
+      key: group.key,
+      title: group.title,
+      categoryId,
+      items,
+    }
+  }),
+)
+
+const defaultSections: HomeSectionConfig[] = [
+  { id: 'brand-categories', type: 'brand_categories', enabled: true, title: '品牌分類', limit: 3 },
+  { id: 'hot-products', type: 'hot_products', enabled: true, title: '最近熱賣', limit: 8 },
+  { id: 'other-brands', type: 'other_brands', enabled: true, title: '其他品牌', limit: 8 },
+  { id: 'featured-categories', type: 'featured_categories', enabled: true, title: '熱門分類', limit: 6 },
+]
+
+const homeSections = computed(() => {
+  const configured = (tenant?.homeSections ?? []).filter((section) => section.enabled !== false && section.type)
+  return configured.length ? configured : defaultSections
+})
+
+const banner = computed(() => {
+  const configured = tenant?.homeBanner
+  return {
+    title: configured?.title?.trim() || tenant?.heroTitle?.trim() || `${primaryBrand.value?.name || tenantName}`,
+    subtitle: configured?.subtitle?.trim() || tenant?.tagline?.trim() || '精選商品',
+    image: configured?.image || generatedBannerImage,
+    link: configured?.link?.trim() || '/products',
+    buttonText: configured?.buttonText?.trim() || '立即選購',
+  }
+})
+
+const heroFeaturedProducts = computed(() => hotProducts.value.slice(0, 4))
+
+function getSectionTitle(section: HomeSectionConfig, fallback: string) {
+  return section.title?.trim() || fallback
+}
+
+const seoTitle = computed(() => tenant?.seoTitle?.trim() || `${banner.value.title} | ${tenantName}`)
+const seoDescription = computed(() => tenant?.seoDescription?.trim() || banner.value.subtitle)
 
 useStoreSeo({
   title: seoTitle.value,
   description: seoDescription.value,
-  image: tenant?.previewImage || tenant?.logoImage || products[0]?.image,
+  image: banner.value.image,
   type: 'website',
   canonicalPath: '/',
   siteName: tenantName,
@@ -239,348 +207,510 @@ useStoreSeo({
 
 <template>
   <section class="home-page">
-    <section v-for="card in primaryCategoryCards" :key="card.key" class="panel product-section">
-      <div class="section-heading">
-        <div>
-          <p class="section-label">Primary brand</p>
-          <h2>{{ primaryBrand?.name ? `${primaryBrand.name} ${card.title}` : card.title }}</h2>
-        </div>
+    <section class="hero">
+      <div class="hero-copy">
+        <h1>{{ banner.title }}</h1>
+        <p>{{ banner.subtitle }}</p>
       </div>
 
-      <div v-if="card.items.length" class="product-grid">
-        <ProductCard
-          v-for="product in card.items"
-          :key="product.id"
-          :product="product"
-          :show-detail-button="false"
-        />
-      </div>
-      <div v-else class="empty-state">
-        {{ card.categoryId == null ? `请先为 ${card.title} 配置分类。` : `主品牌下暂无对应 ${card.title} 商品。` }}
+      <div class="hero-media">
+        <img :src="banner.image" :alt="banner.title" class="hero-image">
       </div>
     </section>
 
-    <template v-for="moduleKey in orderedHomeModules" :key="moduleKey">
-      <section v-if="moduleKey === 'products'" class="panel compact-section">
+    <section v-if="heroFeaturedProducts.length" class="featured-strip">
+      <NuxtLink
+        v-for="product in heroFeaturedProducts"
+        :key="product.id"
+        :to="buildProductPath(product)"
+        class="featured-strip-item"
+      >
+        <img :src="product.image" :alt="product.name">
+        <div>
+          <strong>{{ product.name }}</strong>
+          <span>NT$ {{ product.price.toFixed(2) }}</span>
+        </div>
+      </NuxtLink>
+    </section>
+
+    <template v-for="section in homeSections" :key="section.id">
+      <section v-if="section.type === 'hot_products'" class="panel section-panel">
         <div class="section-heading">
-          <div>
-            <p class="section-label">Seasonal picks</p>
-            <h2>本季热卖</h2>
-          </div>
-          <NuxtLink class="link-button" to="/products">查看全部</NuxtLink>
+          <h2>{{ getSectionTitle(section, '最近熱賣') }}</h2>
+          <NuxtLink class="section-link" to="/products">更多</NuxtLink>
         </div>
 
-        <div v-if="seasonalProducts.length" class="product-grid">
+        <div v-if="hotProducts.length" class="product-grid">
           <ProductCard
-            v-for="product in seasonalProducts"
+            v-for="product in hotProducts.slice(0, section.limit || 8)"
             :key="product.id"
             :product="product"
             :show-detail-button="false"
           />
         </div>
-        <div v-else class="empty-state">暂无热卖商品可展示。</div>
+        <div v-else class="empty-state">暂无商品</div>
       </section>
 
-      <section v-else-if="moduleKey === 'categories'" class="panel compact-section">
+      <section v-else-if="section.type === 'brand_categories'" class="panel section-panel">
         <div class="section-heading">
-          <div>
-            <p class="section-label">Browse categories</p>
-            <h2>热门分类</h2>
-          </div>
-          <NuxtLink class="link-button" to="/products">查看全部</NuxtLink>
+          <h2>{{ getSectionTitle(section, '品牌分類') }}</h2>
         </div>
 
-        <div v-if="featuredCategories.length" class="compact-grid">
-          <NuxtLink
-            v-for="category in featuredCategories"
-            :key="category.id"
-            class="compact-card"
-            :to="buildCategoryPath(category)"
+        <div class="category-stack-grid">
+          <article
+            v-for="card in primaryCategoryCards.slice(0, section.limit || 3)"
+            :key="card.key"
+            class="category-stack"
           >
-            <strong>{{ category.name }}</strong>
-            <span>{{ category.count }} 件</span>
-          </NuxtLink>
+            <div class="category-stack-head">
+              <strong class="stack-title">{{ card.title }}</strong>
+              <span v-if="card.items.length" class="stack-count">{{ card.items.length }} 款</span>
+            </div>
+
+            <div v-if="card.items.length" class="mini-product-grid">
+              <NuxtLink
+                v-for="product in card.items"
+                :key="product.id"
+                :to="buildProductPath(product)"
+                class="mini-product-card"
+              >
+                <img :src="product.image" :alt="product.name">
+                <div class="mini-product-copy">
+                  <span>{{ product.name }}</span>
+                  <small>NT$ {{ product.price.toFixed(2) }}</small>
+                </div>
+              </NuxtLink>
+            </div>
+            <div v-else class="empty-state">暂无商品</div>
+          </article>
         </div>
-        <div v-else class="empty-state">暂无热门分类。</div>
       </section>
 
-      <section v-else-if="moduleKey === 'brands'" class="panel compact-section">
+      <section v-else-if="section.type === 'other_brands'" class="panel section-panel">
         <div class="section-heading">
-          <div>
-            <p class="section-label">Other brands</p>
-            <h2>其他品牌</h2>
-          </div>
+          <h2>{{ getSectionTitle(section, '其他品牌') }}</h2>
         </div>
 
         <div v-if="featuredBrands.length" class="brand-grid">
           <NuxtLink
-            v-for="brand in featuredBrands"
+            v-for="brand in featuredBrands.slice(0, section.limit || 8)"
             :key="brand.id"
             class="brand-card"
             :to="`/products?brand=${encodeURIComponent(brand.name)}`"
           >
-            <div class="brand-logo-shell">
-              <img v-if="brand.logoUrl" :src="brand.logoUrl" :alt="brand.name" class="brand-logo" />
+            <div class="brand-logo-shell" :class="{ 'has-logo': !!brand.logoUrl }">
+              <img v-if="brand.logoUrl" :src="brand.logoUrl" :alt="brand.name" class="brand-logo">
               <span v-else class="brand-placeholder">{{ brand.name.slice(0, 1) }}</span>
             </div>
-            <h3>{{ brand.name }}</h3>
+            <strong>{{ brand.name }}</strong>
           </NuxtLink>
         </div>
-        <div v-else class="empty-state">暂无其他品牌可展示。</div>
+        <div v-else class="empty-state">暂无品牌</div>
+      </section>
+
+      <section v-else-if="section.type === 'featured_categories'" class="panel section-panel">
+        <div class="section-heading">
+          <h2>{{ getSectionTitle(section, '熱門分類') }}</h2>
+          <NuxtLink class="section-link" to="/products">更多</NuxtLink>
+        </div>
+
+        <div v-if="featuredCategories.length" class="category-grid">
+          <NuxtLink
+            v-for="category in featuredCategories.slice(0, section.limit || 6)"
+            :key="category.id"
+            :to="buildCategoryPath(category)"
+            class="category-card"
+          >
+            <strong>{{ category.name }}</strong>
+            <small>{{ category.count }} 件</small>
+          </NuxtLink>
+        </div>
+        <div v-else class="empty-state">暂无分类</div>
       </section>
     </template>
-
-    <section class="panel compact-section convenience-section">
-      <div class="section-heading">
-        <div>
-          <p class="section-label">Convenience tools</p>
-          <h2>超商常用服務</h2>
-        </div>
-      </div>
-
-      <div class="convenience-grid">
-        <a
-          v-for="item in convenienceTools"
-          :key="item.key"
-          class="convenience-card"
-          :href="item.href"
-          target="_blank"
-          rel="noreferrer"
-        >
-          <strong>{{ item.title }}</strong>
-          <span>{{ item.description }}</span>
-        </a>
-      </div>
-    </section>
   </section>
 </template>
 
 <style scoped>
 .home-page {
   display: grid;
-  gap: 1.25rem;
+  gap: 1rem;
 }
 
-.product-section,
-.compact-section {
+.hero {
   display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
   gap: 1rem;
+  padding: 1.2rem;
+  border-radius: 1.25rem;
+  border: 1px solid color-mix(in srgb, var(--tenant-border, #dcdcde) 80%, #ffffff);
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--tenant-accent, #2271b1) 14%, transparent), transparent 28%),
+    linear-gradient(135deg, #f8fcff 0%, #f1f7fb 45%, #ffffff 100%);
+}
+
+.hero-copy {
+  display: grid;
+  align-content: center;
+  gap: 0.85rem;
+}
+
+.hero-copy h1 {
+  margin: 0;
+  font-size: clamp(2rem, 3.6vw, 3.6rem);
+  line-height: 0.98;
+  color: #12212f;
+}
+
+.hero-copy p {
+  max-width: 30rem;
+  color: #5d7384;
+  line-height: 1.6;
+}
+
+.hero-media {
+  min-width: 0;
+}
+
+.hero-image {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  border-radius: 1rem;
+  object-fit: cover;
+}
+
+.featured-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.featured-strip-item {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 0.7rem;
+  align-items: center;
+  padding: 0.75rem;
+  border-radius: 1rem;
+  border: 1px solid color-mix(in srgb, var(--tenant-border, #dcdcde) 80%, #ffffff);
+  background: rgba(255, 255, 255, 0.92);
+  color: inherit;
+  text-decoration: none;
+}
+
+.featured-strip-item img {
+  width: 72px;
+  height: 72px;
+  border-radius: 0.8rem;
+  object-fit: cover;
+  background: #f3f7fa;
+}
+
+.featured-strip-item strong {
+  display: block;
+  color: #153040;
+  line-height: 1.35;
+}
+
+.featured-strip-item span {
+  color: #6d8393;
+  font-size: 0.82rem;
+}
+
+.section-panel {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+  border-radius: 1.1rem;
 }
 
 .section-heading {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
-  gap: 1rem;
-}
-
-.section-label {
-  color: var(--tenant-accent, var(--wp-blue));
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  align-items: center;
+  gap: 0.8rem;
 }
 
 .section-heading h2 {
-  margin: 0.3rem 0 0;
+  margin: 0;
+  font-size: 1.15rem;
+  color: #112535;
+}
+
+.section-link {
+  color: var(--tenant-accent, #2271b1);
+  font-size: 0.84rem;
+  font-weight: 700;
 }
 
 .product-grid {
-  display: grid;
-  gap: 0.85rem;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
-
-.compact-grid {
   display: grid;
   gap: 0.75rem;
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.compact-card {
+.category-stack-grid {
   display: grid;
-  gap: 0.35rem;
+  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.category-stack {
+  display: grid;
+  gap: 0.9rem;
+  height: 100%;
   padding: 1rem;
-  border: 1px solid var(--tenant-border, var(--wp-border));
-  border-radius: 0.75rem;
-  background: linear-gradient(180deg, #ffffff, var(--tenant-surface, #f6f7f7));
+  border-radius: 1rem;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--tenant-accent, #2271b1) 8%, transparent), transparent 28%),
+    linear-gradient(180deg, #ffffff, #f8fbfd);
+  border: 1px solid rgba(221, 229, 236, 0.95);
+}
+
+.category-stack-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.stack-title {
+  color: #153040;
+  font-size: 1rem;
+}
+
+.stack-count {
+  flex: 0 0 auto;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tenant-accent, #2271b1) 10%, #ffffff);
+  color: var(--tenant-accent, #2271b1);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.mini-product-grid {
+  display: grid;
+  gap: 0.8rem;
+  align-content: start;
+  min-height: 22rem;
+}
+
+.mini-product-card {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: start;
+  padding: 0.5rem 0;
   color: inherit;
   text-decoration: none;
+  border-top: 1px solid rgba(230, 236, 241, 0.9);
 }
 
-.compact-card strong {
-  color: var(--tenant-text, var(--wp-heading));
+.mini-product-card:first-child {
+  padding-top: 0;
+  border-top: 0;
 }
 
-.compact-card span {
-  color: var(--tenant-muted, var(--wp-text-muted));
-  font-size: 0.85rem;
+.mini-product-card img {
+  width: 60px;
+  height: 60px;
+  border-radius: 0.75rem;
+  object-fit: cover;
+  background: #f3f7fa;
+}
+
+.mini-product-copy {
+  display: grid;
+  gap: 0.24rem;
+}
+
+.mini-product-card span {
+  color: #173142;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.mini-product-copy small {
+  color: #718596;
+  font-size: 0.74rem;
 }
 
 .brand-grid {
   display: grid;
-  gap: 0.6rem;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.75rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .brand-card {
   display: grid;
+  gap: 0.55rem;
   justify-items: center;
-  gap: 0.5rem;
-  padding: 0.75rem 0.55rem;
-  border: 1px solid var(--tenant-border, var(--wp-border));
-  border-radius: 0.7rem;
-  background: linear-gradient(180deg, #ffffff, var(--tenant-surface, #f6f7f7));
-  text-decoration: none;
+  padding: 0.85rem 0.7rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(220, 230, 238, 0.95);
+  background: linear-gradient(180deg, #ffffff, #f8fbfd);
   color: inherit;
+  text-decoration: none;
 }
 
 .brand-logo-shell {
   display: grid;
   place-items: center;
   width: 100%;
-  min-height: 60px;
-  padding: 0.55rem;
-  border-radius: 0.6rem;
-  background: var(--tenant-card-bg, #ffffff);
+  min-height: 88px;
+  padding: 0.75rem;
+  border-radius: 0.9rem;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(228, 235, 240, 0.9);
+}
+
+.brand-logo-shell.has-logo {
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
 }
 
 .brand-logo {
   max-width: 100%;
-  max-height: 34px;
+  max-height: 52px;
+  width: auto;
   object-fit: contain;
 }
 
 .brand-placeholder {
   display: inline-grid;
   place-items: center;
-  width: 2.2rem;
-  height: 2.2rem;
+  width: 2.3rem;
+  height: 2.3rem;
   border-radius: 999px;
-  background: var(--tenant-tag-bg, var(--tenant-surface, #f6f7f7));
-  color: var(--tenant-accent, var(--wp-blue));
-  font-weight: 700;
-  font-size: 0.9rem;
+  background: color-mix(in srgb, var(--tenant-accent, #2271b1) 12%, #ffffff);
+  color: var(--tenant-accent, #2271b1);
+  font-weight: 800;
 }
 
-.brand-card h3 {
-  margin: 0;
+.brand-card strong {
+  color: #173142;
   font-size: 0.88rem;
-  line-height: 1.3;
   text-align: center;
-  color: var(--tenant-text, var(--wp-heading));
+  line-height: 1.35;
 }
 
-.convenience-section {
-  gap: 0.9rem;
-}
-
-.convenience-grid {
+.category-grid {
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.convenience-card {
+.category-card {
   display: grid;
-  gap: 0.35rem;
-  padding: 1rem 1.05rem;
-  border: 1px solid var(--tenant-border, var(--wp-border));
-  border-radius: 0.75rem;
-  background: linear-gradient(180deg, #ffffff, var(--tenant-surface, #f6f7f7));
+  gap: 0.3rem;
+  padding: 0.9rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(220, 230, 238, 0.95);
+  background: linear-gradient(180deg, #ffffff, #f8fbfd);
   color: inherit;
   text-decoration: none;
 }
 
-.convenience-card strong {
-  color: var(--tenant-text, var(--wp-heading));
-  font-size: 0.96rem;
+.category-card strong {
+  color: #173142;
 }
 
-.convenience-card span {
-  color: var(--tenant-muted, var(--wp-text-muted));
-  font-size: 0.84rem;
-  line-height: 1.5;
+.category-card small,
+.empty-state {
+  color: #718596;
 }
 
 .empty-state {
-  color: var(--tenant-muted, var(--wp-text-muted));
+  min-height: 22rem;
+  display: grid;
+  align-content: start;
 }
 
-@media (max-width: 1440px) {
-  .product-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 1200px) {
+@media (max-width: 1180px) {
+  .featured-strip,
   .product-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .brand-grid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 960px) {
-  .section-heading {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+
+  .featured-strip {
+    display: flex;
     flex-direction: column;
-    align-items: flex-start;
   }
 
   .product-grid,
-  .compact-grid,
-  .convenience-grid {
+  .category-stack-grid,
+  .brand-grid,
+  .category-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .brand-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 640px) {
   .home-page {
-    gap: 1rem;
+    gap: 0.85rem;
   }
 
-  .product-grid {
+  .hero {
+    gap: 0.85rem;
+    padding: 0.9rem;
+  }
+
+  .hero-copy h1 {
+    font-size: 1.75rem;
+  }
+
+  .hero-copy p {
+    font-size: 0.88rem;
+  }
+
+  .hero-image {
+    min-height: 220px;
+  }
+
+  .featured-strip {
+    gap: 0.55rem;
+  }
+
+  .featured-strip-item {
+    width: 100%;
+    grid-template-columns: 56px minmax(0, 1fr);
+    padding: 0.55rem;
+  }
+
+  .featured-strip-item img {
+    width: 56px;
+    height: 56px;
+  }
+
+  .featured-strip,
+  .product-grid,
+  .brand-grid,
+  .category-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .compact-grid,
-  .brand-grid,
-  .convenience-grid {
-    gap: 0.5rem;
-  }
-
-  .convenience-grid {
+  .category-stack-grid {
     grid-template-columns: 1fr;
   }
 
-  .brand-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .mini-product-grid,
+  .empty-state {
+    min-height: 0;
   }
 
-  .compact-card,
-  .brand-card {
-    padding: 0.7rem 0.5rem;
+  .section-panel {
+    padding: 0.85rem;
   }
 
-  .brand-logo-shell {
-    min-height: 52px;
-    padding: 0.45rem;
-  }
-
-  .brand-logo {
-    max-height: 28px;
-  }
-
-  .brand-card h3,
-  .compact-card strong {
-    font-size: 0.85rem;
+  .section-heading h2 {
+    font-size: 1rem;
   }
 }
 </style>

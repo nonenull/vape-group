@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { Delete, Edit, Plus, Search, View } from '@element-plus/icons-vue'
 import type { CheckboxValueType } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAdminStore } from '@/stores/admin'
 import { adminAPI, resolveAssetURL } from '@/api/admin'
 import type {
@@ -858,9 +859,16 @@ async function removeProductById(productId: number) {
   if (!product) {
     return
   }
-  if (!confirm('確定要刪除此商品嗎？')) {
+  try {
+    await ElMessageBox.confirm(`確定要刪除商品「${product.baseName}」嗎？`, '刪除商品', {
+      type: 'warning',
+      confirmButtonText: '刪除',
+      cancelButtonText: '取消',
+    })
+  } catch {
     return
   }
+
   try {
     await store.deleteProduct(productId)
     isCreating.value = false
@@ -874,20 +882,30 @@ async function removeProductById(productId: number) {
       galleryInput.value = productForm.value.gallery.join('\n')
       skuVariantInput.value = ''
     }
-    alert('商品已成功刪除')
+    ElMessage.success('商品已成功刪除')
   } catch (error) {
     console.error('刪除商品失敗:', error)
-    alert('刪除商品失敗: ' + (error as Error).message)
+    ElMessage.error('刪除商品失敗: ' + (error as Error).message)
   }
 }
 
 async function removeSelectedProducts() {
   if (!selectedProductIds.value.length) {
-    alert('請先選擇至少一個商品')
+    ElMessage.warning('請先選擇至少一個商品')
     return
   }
 
-  if (!confirm(`確定要批量刪除這 ${selectedProductIds.value.length} 個商品嗎？此操作無法復原。`)) {
+  try {
+    await ElMessageBox.confirm(
+      `確定要批量刪除這 ${selectedProductIds.value.length} 個商品嗎？此操作無法復原。`,
+      '批量刪除商品',
+      {
+        type: 'warning',
+        confirmButtonText: '刪除',
+        cancelButtonText: '取消',
+      },
+    )
+  } catch {
     return
   }
 
@@ -911,10 +929,10 @@ async function removeSelectedProducts() {
       skuVariantInput.value = ''
     }
 
-    alert('已批量刪除選中的商品')
+    ElMessage.success('已批量刪除選中的商品')
   } catch (error) {
     console.error('批量刪除商品失敗:', error)
-    alert('批量刪除商品失敗: ' + (error as Error).message)
+    ElMessage.error('批量刪除商品失敗: ' + (error as Error).message)
   }
 }
 

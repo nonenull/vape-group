@@ -1,6 +1,18 @@
 import axios from 'axios'
 import { useRequestHeaders, useRuntimeConfig } from '#app'
-import type { Product, ProductListApiItem, ProductListResponse, Category, TenantInfo, PlatformConfig, Brand, StoreOrder } from '~/types/store'
+import type {
+  Brand,
+  Category,
+  ConvenienceStoreLocation,
+  HomeBannerConfig,
+  HomeSectionConfig,
+  PlatformConfig,
+  Product,
+  ProductListApiItem,
+  ProductListResponse,
+  StoreOrder,
+  TenantInfo,
+} from '~/types/store'
 
 interface TenantResponse {
   id: number
@@ -29,6 +41,21 @@ interface TenantResponse {
   support_text?: string
   seo_title: string
   seo_description: string
+  home_banner?: {
+    enabled?: boolean
+    title?: string
+    subtitle?: string
+    image?: string
+    link?: string
+    button_text?: string
+  }
+  home_sections?: Array<{
+    id?: string
+    type?: string
+    enabled?: boolean
+    title?: string
+    limit?: number
+  }>
 }
 
 interface PlatformConfigResponse {
@@ -79,6 +106,21 @@ interface OrderResponse {
   }>
   created_at: string
   updated_at: string
+}
+
+interface ECPayCvsMapConfigResponse {
+  action: string
+  method: string
+  fields: Record<string, string>
+}
+
+interface ConvenienceStoreLocationResponse {
+  store_id: string
+  store_name: string
+  store_address: string
+  store_phone: string
+  city: string
+  district: string
 }
 
 interface CategoryResponse {
@@ -133,8 +175,9 @@ function getApiBaseURL() {
 
 function getPublicAssetBaseURL() {
   const config = useRuntimeConfig()
-  if (config.public.assetBase) {
-    return config.public.assetBase.replace(/\/$/, '')
+  const assetBase = typeof config.public.assetBase === 'string' ? config.public.assetBase : ''
+  if (assetBase) {
+    return assetBase.replace(/\/$/, '')
   }
 
   if (import.meta.client) {
@@ -165,12 +208,15 @@ function createApiClient() {
   const headers: Record<string, string> = {}
   if (import.meta.server) {
     const requestHeaders = useRequestHeaders(['host', 'x-tenant-domain'])
-    const tenantDomain = requestHeaders['x-tenant-domain'] || requestHeaders.host || ''
+    const tenantDomain = (requestHeaders['x-tenant-domain'] || requestHeaders.host || '').split(':')[0]?.trim().toLowerCase() || ''
     if (tenantDomain) {
       headers['X-Tenant-Domain'] = tenantDomain
     }
   } else {
-    headers['X-Tenant-Domain'] = window.location.hostname
+    const tenantDomain = window.location.hostname
+    if (tenantDomain) {
+      headers['X-Tenant-Domain'] = tenantDomain
+    }
   }
 
   return axios.create({
@@ -298,6 +344,27 @@ function normalizeBrand(input: BrandResponse, assetBaseURL: string): Brand {
 }
 
 function normalizeTenant(input: TenantResponse): TenantInfo {
+  const homeBanner: HomeBannerConfig = {
+    enabled: Boolean(input.home_banner?.enabled ?? false),
+    title: input.home_banner?.title?.trim() ?? '',
+    subtitle: input.home_banner?.subtitle?.trim() ?? '',
+    image: input.home_banner?.image?.trim() ?? '',
+    link: input.home_banner?.link?.trim() ?? '',
+    buttonText: input.home_banner?.button_text?.trim() ?? '',
+  }
+
+  const homeSections: HomeSectionConfig[] = Array.isArray(input.home_sections)
+    ? input.home_sections
+      .map((item, index) => ({
+        id: String(item?.id ?? `${item?.type ?? 'section'}-${index + 1}`).trim(),
+        type: String(item?.type ?? '').trim(),
+        enabled: item?.enabled !== false,
+        title: String(item?.title ?? '').trim(),
+        limit: Number(item?.limit ?? 0),
+      }))
+      .filter((item) => item.type)
+    : []
+
   return {
     id: input.id,
     domain: input.domain,
@@ -325,6 +392,8 @@ function normalizeTenant(input: TenantResponse): TenantInfo {
     supportText: input.support_text,
     seoTitle: input.seo_title,
     seoDescription: input.seo_description,
+    homeBanner,
+    homeSections,
   }
 }
 
@@ -420,6 +489,33 @@ export async function createOrder(payload: CreateOrderPayload) {
   const client = createApiClient()
   const response = await client.post<OrderResponse>('/api/orders', payload)
   return response.data
+}
+
+export async function getECPayCvsMapConfig(input: {
+  returnUrl: string
+  flow: 'cart' | 'checkout'
+}) {
+  const client = createApiClient()
+  const response = await client.post<ECPayCvsMapConfigResponse>('/api/logistics/ecpay/cvs-map', {
+    return_url: input.returnUrl,
+    flow: input.flow,
+  })
+  return response.data
+}
+
+export async function fetchConvenienceStores(): Promise<ConvenienceStoreLocation[]> {
+  const client = createApiClient()
+  const response = await client.get<ConvenienceStoreLocationResponse[]>('/api/logistics/ecpay/stores')
+  return Array.isArray(response.data)
+    ? response.data.map((item) => ({
+      id: String(item.store_id ?? '').trim(),
+      name: String(item.store_name ?? '').trim(),
+      address: String(item.store_address ?? '').trim(),
+      phone: String(item.store_phone ?? '').trim(),
+      city: String(item.city ?? '').trim(),
+      district: String(item.district ?? '').trim(),
+    })).filter((item) => item.id && item.name && item.city && item.district)
+    : []
 }
 
 export async function fetchOrderDetail(id: number): Promise<StoreOrder> {

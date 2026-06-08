@@ -46,3 +46,17 @@ npm run build
 ```sh
 npm run lint
 ```
+
+## Admin Authentication
+
+The admin app now requires an authenticated admin account before it can access `/api/admin/*`.
+
+The backend auto-creates a default admin user on startup from these environment variables:
+
+```env
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin123456
+ADMIN_NAME=Platform Admin
+```
+
+If you do not provide them, those default values are used.

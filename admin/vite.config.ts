@@ -22,7 +22,7 @@ export default defineConfig({
   ],
   server: {
     host: '0.0.0.0',
-    allowedHosts: ['a.vape-group.com', '.vape-group.com', 'localhost', '.localhost'],
+    allowedHosts: true,
   },
   resolve: {
     alias: {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/vape-group/backend/config"
+	"github.com/vape-group/backend/internal/middleware"
 	"gorm.io/gorm"
 )
 
@@ -17,6 +18,7 @@ func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
 	}
 	productListCache := newProductListCache(time.Duration(cacheSeconds) * time.Second)
 	categoryDescendantCache := newCategoryDescendantCache()
+	convenienceStoreCache := newConvenienceStoreCache()
 	registerCatalogCaches(productListCache, categoryDescendantCache)
 
 	// 健康检查
@@ -27,6 +29,9 @@ func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
 	router.GET("/__tenant_host_check", GetTenantHostCheckHandler())
 	router.GET("/api/tenant/current", GetCurrentTenantHandler())
 	router.GET("/api/platform-config", GetPlatformConfigHandler(db))
+	router.POST("/api/logistics/ecpay/cvs-map", GetECPayCvsMapConfigHandler(cfg))
+	router.POST("/api/logistics/ecpay/callback", HandleECPayCvsSelectionCallback())
+	router.GET("/api/logistics/ecpay/stores", GetECPayConvenienceStoresHandler(cfg, convenienceStoreCache))
 	// 认证相关路由
 	authGroup := router.Group("/api/auth")
 	{
@@ -34,6 +39,13 @@ func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
 		authGroup.POST("/login", LoginHandler(db))
 		authGroup.POST("/logout", LogoutHandler())
 		authGroup.GET("/me", GetCurrentUserHandler())
+	}
+
+	adminAuthGroup := router.Group("/api/admin/auth")
+	{
+		adminAuthGroup.POST("/login", AdminLoginHandler(db, cfg))
+		adminAuthGroup.POST("/logout", AdminLogoutHandler())
+		adminAuthGroup.GET("/me", middleware.AuthMiddleware(db, cfg), GetCurrentAdminUserHandler())
 	}
 
 	// 商品相关路由
@@ -77,11 +89,15 @@ func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
 
 	// 后台管理路由
 	adminGroup := router.Group("/api/admin")
+	adminGroup.Use(middleware.AuthMiddleware(db, cfg), middleware.AdminMiddleware())
 	{
 		adminGroup.GET("/tenants", GetTenantsHandler(db))
 		adminGroup.POST("/tenants", CreateTenantHandler(db))
 		adminGroup.PUT("/tenants/:id", UpdateTenantHandler(db))
 		adminGroup.DELETE("/tenants/:id", DeleteTenantHandler(db))
+		adminGroup.POST("/tenants/:id/domains", AddTenantDomainHandler(db, cfg))
+		adminGroup.DELETE("/tenants/:id/domains/:domain", RemoveTenantDomainHandler(db, cfg))
+		adminGroup.PUT("/tenants/:id/domains/:domain/set-primary", SetTenantPrimaryDomainHandler(db, cfg))
 		adminGroup.GET("/platform-config", GetAdminPlatformConfigHandler(db))
 		adminGroup.PUT("/platform-config", UpdateAdminPlatformConfigHandler(db))
 		adminGroup.GET("/dashboard", GetDashboardHandler(db))

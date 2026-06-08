@@ -288,6 +288,21 @@ watch(
 const categoryLabel = computed(() => selectedCategoryName.value ? `${selectedCategoryName.value} 分類商品` : '全站商品目錄')
 const brandLabel = computed(() => brand.value ? `${brand.value} 品牌商品` : '')
 const seoTitle = computed(() => `${brandLabel.value || categoryLabel.value} | ${tenantName.value}`)
+const breadcrumbItems = computed(() => {
+  const items: Array<{ name: string, path: string }> = [
+    { name: '首頁', path: '/' },
+    { name: '商品分類', path: '/products' },
+  ]
+
+  if (selectedCategoryRecord.value) {
+    items.push({
+      name: selectedCategoryRecord.value.name,
+      path: buildCategoryPath(selectedCategoryRecord.value),
+    })
+  }
+
+  return items
+})
 const description = computed(() => {
   const keywordLabel = keyword.value ? `，搜尋關鍵字為「${keyword.value}」` : ''
   const categorySegment = selectedCategoryName.value ? `分類鎖定 ${selectedCategoryName.value}` : ''
@@ -321,11 +336,7 @@ useStoreSeo({
   lang: 'zh-Hant',
   jsonLd: [
     createBreadcrumbJsonLd({
-      items: [
-        { name: '首頁', path: '/' },
-        { name: '商品目錄', path: '/products' },
-        ...(selectedCategoryRecord.value ? [{ name: selectedCategoryRecord.value.name, path: buildCategoryPath(selectedCategoryRecord.value) }] : []),
-      ],
+      items: breadcrumbItems.value,
     }),
     createItemListJsonLd({
       name: `${tenantName.value} 商品目錄`,
@@ -356,7 +367,15 @@ if (props.redirectLegacyQuery && typeof route.query.category === 'string' && sel
 <template>
   <section class="product-list-page">
     <div class="page-intro">
-      <p class="breadcrumb">首頁 / 商店 / 商品目錄</p>
+      <nav class="breadcrumb" aria-label="麵包屑">
+        <template v-for="(item, index) in breadcrumbItems" :key="`${item.path}-${index}`">
+          <NuxtLink v-if="index < breadcrumbItems.length - 1" :to="item.path" class="breadcrumb-link">
+            {{ item.name }}
+          </NuxtLink>
+          <span v-else class="breadcrumb-current">{{ item.name }}</span>
+          <span v-if="index < breadcrumbItems.length - 1" class="breadcrumb-separator"> - </span>
+        </template>
+      </nav>
       <div class="intro-row">
         <div>
           <h1>商品目錄</h1>
@@ -450,6 +469,20 @@ if (props.redirectLegacyQuery && typeof route.query.category === 'string' && sel
 .breadcrumb {
   color: var(--wp-text-muted);
   font-size: 0.8125rem;
+}
+
+.breadcrumb-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.breadcrumb-link:hover {
+  color: var(--tenant-accent, var(--wp-blue));
+  text-decoration: underline;
+}
+
+.breadcrumb-current {
+  color: var(--wp-heading);
 }
 
 .intro-row {

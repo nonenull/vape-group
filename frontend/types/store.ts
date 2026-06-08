@@ -78,6 +78,25 @@ export interface TenantInfo {
   supportText?: string
   seoTitle: string
   seoDescription: string
+  homeBanner?: HomeBannerConfig
+  homeSections?: HomeSectionConfig[]
+}
+
+export interface HomeBannerConfig {
+  enabled: boolean
+  title: string
+  subtitle: string
+  image: string
+  link: string
+  buttonText: string
+}
+
+export interface HomeSectionConfig {
+  id: string
+  type: string
+  enabled: boolean
+  title: string
+  limit: number
 }
 
 export interface PlatformConfig {
@@ -102,6 +121,15 @@ export interface Brand {
   name: string
   logoUrl?: string
   description?: string
+}
+
+export interface ConvenienceStoreLocation {
+  id: string
+  name: string
+  address: string
+  phone: string
+  city: string
+  district: string
 }
 
 export interface StoreOrderItem {

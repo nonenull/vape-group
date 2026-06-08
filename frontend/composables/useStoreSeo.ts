@@ -224,8 +224,16 @@ export function createProductJsonLd(input: {
   price: number
   availability: boolean
   url?: string
+  brand?: string
+  mpn?: string
+  currency?: string
   rating?: number
   reviews?: number
+  itemCondition?: string
+  additionalProperty?: Array<{
+    name: string
+    value: string
+  }>
 }) {
   return {
     '@context': 'https://schema.org',
@@ -234,13 +242,36 @@ export function createProductJsonLd(input: {
     description: input.description,
     image: input.image.map((value) => (/^(https?:)?\/\//.test(value) ? value : absoluteUrl(value))),
     sku: input.sku,
+    ...(input.mpn
+      ? {
+          mpn: input.mpn,
+        }
+      : {}),
+    ...(input.brand
+      ? {
+          brand: {
+            '@type': 'Brand',
+            name: input.brand,
+          },
+        }
+      : {}),
     category: input.category,
     url: input.url ?? absoluteUrl(useRoute().path),
+    ...(input.additionalProperty?.length
+      ? {
+          additionalProperty: input.additionalProperty.map((item) => ({
+            '@type': 'PropertyValue',
+            name: item.name,
+            value: item.value,
+          })),
+        }
+      : {}),
     offers: {
       '@type': 'Offer',
-      priceCurrency: 'TWD',
+      priceCurrency: input.currency ?? 'TWD',
       price: input.price.toFixed(2),
       availability: input.availability ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock',
+      itemCondition: input.itemCondition ?? 'https://schema.org/NewCondition',
       url: input.url ?? absoluteUrl(useRoute().path),
     },
     ...(input.reviews && input.rating

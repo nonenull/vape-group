@@ -347,4 +347,54 @@ const addToCart = async () => {
   background: var(--wp-blue-soft);
   color: var(--tenant-accent, var(--wp-blue));
 }
+
+@media (max-width: 640px) {
+  .product-card {
+    border-radius: 0.9rem;
+  }
+
+  .media {
+    min-height: 138px;
+  }
+
+  .media img {
+    max-height: 108px;
+    width: min(118px, 72%);
+  }
+
+  .badge {
+    top: 0.55rem;
+    left: 0.55rem;
+    padding: 0.18rem 0.42rem;
+    font-size: 0.65rem;
+  }
+
+  .body {
+    gap: 0.55rem;
+    padding: 0.7rem;
+  }
+
+  .body h3 {
+    font-size: 0.84rem;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .price {
+    font-size: 0.92rem;
+  }
+
+  .base-price {
+    font-size: 0.72rem;
+  }
+
+  .card-actions .btn-primary {
+    min-height: 34px;
+    padding: 0.5rem 0.55rem;
+    font-size: 0.76rem;
+  }
+}
 </style>

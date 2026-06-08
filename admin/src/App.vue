@@ -1,17 +1,27 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { RouterLink, RouterView } from 'vue-router'
+import { RouterLink, RouterView, useRouter } from 'vue-router'
 import { useAdminStore } from '@/stores/admin'
 
 const store = useAdminStore()
+const router = useRouter()
 
 onMounted(() => {
-  store.bootstrap()
+  if (store.isAuthenticated) {
+    void store.bootstrap()
+  }
 })
+
+async function handleLogout() {
+  await store.logout()
+  await router.replace({ name: 'login' })
+}
 </script>
 
 <template>
-  <div class="admin-shell">
+  <RouterView v-if="!store.isAuthenticated && store.authReady" />
+
+  <div v-else class="admin-shell">
     <aside class="admin-sidebar">
       <div class="sidebar-brand">
         <div class="brand-mark">
@@ -45,6 +55,15 @@ onMounted(() => {
         <div>
           <p class="topbar-label">WordPress inspired workspace</p>
           <h1>管理後台</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="topbar-user" v-if="store.authUser">
+            <strong>{{ store.authUser.name }}</strong>
+            <span>@{{ store.authUser.username }}</span>
+          </div>
+          <button type="button" class="admin-secondary" @click="handleLogout">
+            退出登录
+          </button>
         </div>
       </header>
 
@@ -147,6 +166,23 @@ onMounted(() => {
   padding: 1.25rem 1.5rem;
   background: #fff;
   border-bottom: 1px solid var(--wp-border);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.topbar-user {
+  display: grid;
+  justify-items: end;
+  gap: 0.15rem;
+}
+
+.topbar-user span {
+  color: var(--wp-text-muted);
+  font-size: 0.85rem;
 }
 
 .topbar-label {

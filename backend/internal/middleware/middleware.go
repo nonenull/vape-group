@@ -1,11 +1,18 @@
 package middleware
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/vape-group/backend/config"
 	"github.com/vape-group/backend/internal/models"
 	"gorm.io/gorm"
 )
@@ -81,7 +88,34 @@ func resolveTenantByDomain(db *gorm.DB, domain string) (models.Tenant, string, e
 		}
 	}
 
+	alternateDomain := alternateTenantDomain(domain)
+	if alternateDomain == "" || alternateDomain == domain {
+		return models.Tenant{}, "", gorm.ErrRecordNotFound
+	}
+
+	for _, candidate := range tenants {
+		if strings.TrimSpace(strings.ToLower(candidate.Domain)) == alternateDomain {
+			return candidate, domain, nil
+		}
+		for _, alias := range jsonArrayToStrings(candidate.BoundDomains) {
+			if strings.TrimSpace(strings.ToLower(alias)) == alternateDomain {
+				return candidate, domain, nil
+			}
+		}
+	}
+
 	return models.Tenant{}, "", gorm.ErrRecordNotFound
+}
+
+func alternateTenantDomain(domain string) string {
+	normalized := strings.TrimSpace(strings.ToLower(domain))
+	if normalized == "" {
+		return ""
+	}
+	if strings.HasPrefix(normalized, "www.") {
+		return strings.TrimPrefix(normalized, "www.")
+	}
+	return "www." + normalized
 }
 
 func jsonArrayToStrings(values models.JSONArray) []string {
@@ -145,10 +179,101 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
+type adminAuthClaims struct {
+	Sub string `json:"sub"`
+	Exp int64  `json:"exp"`
+	Iat int64  `json:"iat"`
+}
+
+func CreateAdminToken(adminID uint, jwtSecret string, now time.Time) (string, error) {
+	headerJSON, err := json.Marshal(map[string]string{
+		"alg": "HS256",
+		"typ": "JWT",
+	})
+	if err != nil {
+		return "", err
+	}
+
+	claimsJSON, err := json.Marshal(adminAuthClaims{
+		Sub: strconv.FormatUint(uint64(adminID), 10),
+		Iat: now.Unix(),
+		Exp: now.Add(24 * time.Hour).Unix(),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	header := base64.RawURLEncoding.EncodeToString(headerJSON)
+	payload := base64.RawURLEncoding.EncodeToString(claimsJSON)
+	signingInput := header + "." + payload
+	signature := signJWT(signingInput, jwtSecret)
+	return signingInput + "." + signature, nil
+}
+
+func ParseAdminToken(token, jwtSecret string) (uint, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return 0, errors.New("invalid token format")
+	}
+
+	signingInput := parts[0] + "." + parts[1]
+	expectedSignature := signJWT(signingInput, jwtSecret)
+	if !hmac.Equal([]byte(parts[2]), []byte(expectedSignature)) {
+		return 0, errors.New("invalid token signature")
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0, err
+	}
+
+	var claims adminAuthClaims
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return 0, err
+	}
+	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
+		return 0, errors.New("token expired")
+	}
+
+	adminID, err := strconv.ParseUint(strings.TrimSpace(claims.Sub), 10, 64)
+	if err != nil || adminID == 0 {
+		return 0, errors.New("invalid token subject")
+	}
+	return uint(adminID), nil
+}
+
+func signJWT(input, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(input))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
 // AuthMiddleware JWT认证中间件
-func AuthMiddleware() gin.HandlerFunc {
+func AuthMiddleware(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// TODO: 实现JWT验证逻辑
+		authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			c.Abort()
+			return
+		}
+
+		token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		adminID, err := ParseAdminToken(token, cfg.JWTSecret)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+			c.Abort()
+			return
+		}
+
+		var admin models.AdminUser
+		if err := db.Where("id = ? AND is_active = ?", adminID, true).Take(&admin).Error; err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Admin account not found"})
+			c.Abort()
+			return
+		}
+
+		c.Set("admin_user", admin)
 		c.Next()
 	}
 }
@@ -156,7 +281,11 @@ func AuthMiddleware() gin.HandlerFunc {
 // AdminMiddleware 管理员权限中间件
 func AdminMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// TODO: 实现管理员权限检查
+		if _, exists := c.Get("admin_user"); !exists {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }

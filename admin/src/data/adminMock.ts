@@ -19,6 +19,7 @@ export interface TenantRecord {
   id: number
   domain: string
   boundDomains: string[]
+  npmProxyHostId?: number | null
   name: string
   isActive: boolean
   theme: string
@@ -43,6 +44,25 @@ export interface TenantRecord {
   supportText?: string
   seoTitle: string
   seoDescription: string
+  homeBanner?: HomeBannerRecord
+  homeSections?: HomeSectionRecord[]
+}
+
+export interface HomeBannerRecord {
+  enabled: boolean
+  title: string
+  subtitle: string
+  image: string
+  link: string
+  buttonText: string
+}
+
+export interface HomeSectionRecord {
+  id: string
+  type: string
+  enabled: boolean
+  title: string
+  limit: number
 }
 
 export interface PlatformConfigRecord {
@@ -136,6 +156,14 @@ export interface BulkGeneratedOverrideNameRecord {
   productId: number
   tenantId: number
   customName: string
+}
+
+export interface AdminAuthUserRecord {
+  id: number
+  username: string
+  name: string
+  isActive: boolean
+  lastLoginAt?: string
 }
 
 export interface OrderRecord {

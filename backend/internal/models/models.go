@@ -3,10 +3,12 @@ package models
 import (
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/vape-group/backend/config"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -49,6 +51,18 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	Tenant       *Tenant   `json:"tenant,omitempty"`
+}
+
+// AdminUser 后台管理员表
+type AdminUser struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	Username     string    `gorm:"type:varchar(100);uniqueIndex" json:"username"`
+	PasswordHash string    `json:"-"`
+	Name         string    `gorm:"type:varchar(255)" json:"name"`
+	IsActive     bool      `gorm:"default:true" json:"is_active"`
+	LastLoginAt  *time.Time `json:"last_login_at"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // Product 全局商品表
@@ -269,6 +283,53 @@ func EnsureDevTenants(db *gorm.DB, domains []string) error {
 	}
 
 	return nil
+}
+
+func EnsureAdminUser(db *gorm.DB, username, password, name string) error {
+	username = strings.TrimSpace(strings.ToLower(username))
+	password = strings.TrimSpace(password)
+	name = strings.TrimSpace(name)
+
+	if username == "" || password == "" {
+		return nil
+	}
+	if name == "" {
+		name = "Platform Admin"
+	}
+
+	var admin AdminUser
+	err := db.Where("username = ?", username).Take(&admin).Error
+	if err == nil {
+		updates := map[string]any{}
+		if strings.TrimSpace(admin.Username) == "" && username != "" {
+			updates["username"] = username
+		}
+		if strings.TrimSpace(admin.Name) == "" && name != "" {
+			updates["name"] = name
+		}
+		if !admin.IsActive {
+			updates["is_active"] = true
+		}
+		if len(updates) > 0 {
+			return db.Model(&admin).Updates(updates).Error
+		}
+		return nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	return db.Create(&AdminUser{
+		Username:     username,
+		PasswordHash: string(passwordHash),
+		Name:         name,
+		IsActive:     true,
+	}).Error
 }
 
 func EnsureProductSlugs(db *gorm.DB, slugGenerator func(uint, string, string) (string, error)) error {

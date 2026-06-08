@@ -149,12 +149,15 @@ onUnmounted(() => {
 
 .header-search {
   display: flex;
+  flex: 1 1 320px;
   align-items: center;
   gap: 0.55rem;
-  min-width: min(100%, 320px);
+  min-width: 0;
+  width: min(100%, 420px);
 }
 
 .header-search input {
+  flex: 1 1 auto;
   width: 100%;
   min-width: 0;
   min-height: 42px;
@@ -240,6 +243,7 @@ onUnmounted(() => {
 @media (max-width: 960px) {
   .header-search {
     width: 100%;
+    flex-basis: 100%;
     order: 3;
   }
 }

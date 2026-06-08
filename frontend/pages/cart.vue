@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import ProductCard from '~/components/store/ProductCard.vue'
+import { buildProductPath } from '~/composables/useProductSlug'
 import { useStoreSeo } from '~/composables/useStoreSeo'
 import { createOrder, fetchProducts } from '~/composables/useStoreApi'
 import { useCartStore } from '~/stores/cart'
@@ -8,6 +10,7 @@ import { useTenantStore } from '~/stores/tenant'
 const router = useRouter()
 const cartStore = useCartStore()
 const tenantStore = useTenantStore()
+const CART_CHECKOUT_FORM_STORAGE_KEY = 'vape_group_cart_checkout_form'
 cartStore.hydrate()
 const { products } = await fetchProducts(1, 200)
 await tenantStore.initTenant()
@@ -27,6 +30,68 @@ const checkoutForm = reactive({
 const submitting = ref(false)
 const orderSuccess = ref<{ id: number; total: number } | null>(null)
 const productMap = new Map(products.map((product) => [product.id, product]))
+const cartProductIds = computed(() => new Set(cartStore.items.map((item) => item.productId)))
+const cartCategoryIds = computed(() => {
+  const ids = new Set<number>()
+
+  for (const item of cartStore.items) {
+    const product = productMap.get(item.productId)
+    if (!product) {
+      continue
+    }
+
+    const sourceIds = product.categoryIds?.length
+      ? product.categoryIds
+      : product.categoryId != null
+        ? [product.categoryId]
+        : []
+
+    for (const categoryId of sourceIds) {
+      ids.add(categoryId)
+    }
+  }
+
+  return ids
+})
+const cartBrands = computed(() => new Set(
+  cartStore.items
+    .map((item) => productMap.get(item.productId)?.brand?.trim())
+    .filter(Boolean),
+))
+const recommendedProducts = computed(() => {
+  const scoredProducts = products
+    .filter((product) => !cartProductIds.value.has(product.id))
+    .map((product) => {
+      let score = 0
+
+      if (product.brand && cartBrands.value.has(product.brand.trim())) {
+        score += 3
+      }
+
+      const productCategoryIds = product.categoryIds?.length
+        ? product.categoryIds
+        : product.categoryId != null
+          ? [product.categoryId]
+          : []
+
+      if (productCategoryIds.some((categoryId) => cartCategoryIds.value.has(categoryId))) {
+        score += 4
+      }
+
+      score += Math.min(product.rating || 0, 5)
+      score += Math.min((product.reviews || 0) / 20, 2)
+
+      return { product, score }
+    })
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score
+      }
+      return right.product.id - left.product.id
+    })
+
+  return scoredProducts.slice(0, 4).map((item) => item.product)
+})
 const cartVariantOptionsMap = computed(() =>
   new Map(
     cartStore.items.map((item) => {
@@ -86,6 +151,10 @@ const cartValidation = computed(() =>
 )
 const cartValidationMap = computed(() => new Map(cartValidation.value.map((item) => [item.cartItemId, item])))
 const hasInvalidCartItems = computed(() => cartValidation.value.some((item) => item.isInvalid))
+const getCartItemProductPath = (item: { productId: number, name: string }) => {
+  const product = productMap.get(item.productId)
+  return buildProductPath(product ?? { id: item.productId, name: item.name })
+}
 
 const updateCartItemVariant = (cartItemId: number, nextSku: string) => {
   const options = cartVariantOptionsMap.value.get(cartItemId) ?? []
@@ -101,6 +170,64 @@ const updateCartItemVariant = (cartItemId: number, nextSku: string) => {
     price: selected.price,
   })
 }
+
+const persistCheckoutForm = () => {
+  if (!import.meta.client) {
+    return
+  }
+
+  sessionStorage.setItem(CART_CHECKOUT_FORM_STORAGE_KEY, JSON.stringify({
+    lineId: checkoutForm.lineId,
+    phone: checkoutForm.phone,
+    convenienceStore: checkoutForm.convenienceStore,
+    paymentMethod: checkoutForm.paymentMethod,
+  }))
+}
+
+const hydrateCheckoutForm = () => {
+  if (!import.meta.client) {
+    return
+  }
+
+  const raw = sessionStorage.getItem(CART_CHECKOUT_FORM_STORAGE_KEY)
+  if (!raw) {
+    return
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    checkoutForm.lineId = typeof parsed.lineId === 'string' ? parsed.lineId : ''
+    checkoutForm.phone = typeof parsed.phone === 'string' ? parsed.phone : ''
+    checkoutForm.convenienceStore = typeof parsed.convenienceStore === 'string' ? parsed.convenienceStore : ''
+    checkoutForm.paymentMethod = typeof parsed.paymentMethod === 'string' ? parsed.paymentMethod : 'cash_on_delivery'
+  } catch {
+    sessionStorage.removeItem(CART_CHECKOUT_FORM_STORAGE_KEY)
+  }
+}
+
+const clearCheckoutFormPersistence = () => {
+  if (!import.meta.client) {
+    return
+  }
+
+  sessionStorage.removeItem(CART_CHECKOUT_FORM_STORAGE_KEY)
+}
+
+if (import.meta.client) {
+  hydrateCheckoutForm()
+}
+
+watch(
+  [
+    () => checkoutForm.lineId,
+    () => checkoutForm.phone,
+    () => checkoutForm.convenienceStore,
+    () => checkoutForm.paymentMethod,
+  ],
+  () => {
+    persistCheckoutForm()
+  },
+)
 
 useStoreSeo({
   title: `購物車${cartStore.itemCount ? ` (${cartStore.itemCount})` : ''} | Vape Group 商城`,
@@ -155,6 +282,7 @@ const checkout = async () => {
     checkoutForm.lineId = ''
     checkoutForm.phone = ''
     checkoutForm.convenienceStore = ''
+    clearCheckoutFormPersistence()
     await router.push({
       path: '/order-success',
       query: {
@@ -180,70 +308,103 @@ const checkout = async () => {
     </div>
 
     <div v-if="cartStore.items.length" class="cart-layout">
-      <article class="panel cart-table-card">
-        <table class="cart-table">
-          <thead>
-            <tr>
-              <th>商品</th>
-              <th>單價</th>
-              <th>數量</th>
-              <th>小計</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in cartStore.items" :key="item.id">
-              <td class="product-column" data-label="商品">
-                <div class="product-cell">
-                  <img :src="item.image" :alt="item.name">
-                  <div class="product-copy">
-                    <span class="product-name">{{ item.name }}</span>
-                    <small v-if="item.variantLabel">{{ item.variantLabel }}</small>
-                    <label
-                      v-if="(cartVariantOptionsMap.get(item.id)?.length ?? 0) > 0"
-                      class="variant-switcher"
-                    >
-                      <span>修改規格</span>
-                      <select
-                        :value="item.variantSku"
-                        @change="updateCartItemVariant(item.id, ($event.target as HTMLSelectElement).value)"
+      <div class="cart-main-column">
+        <article class="panel cart-table-card">
+          <table class="cart-table">
+            <thead>
+              <tr>
+                <th>商品</th>
+                <th>單價</th>
+                <th>數量</th>
+                <th>小計</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in cartStore.items" :key="item.id">
+                <td class="product-column" data-label="商品">
+                  <div class="product-cell">
+                    <NuxtLink class="product-thumb-link" :to="getCartItemProductPath(item)">
+                      <img :src="item.image" :alt="item.name">
+                    </NuxtLink>
+                    <div class="product-copy">
+                      <NuxtLink class="product-name-link" :to="getCartItemProductPath(item)">
+                        <span class="product-name">{{ item.name }}</span>
+                      </NuxtLink>
+                      <small v-if="item.variantLabel">{{ item.variantLabel }}</small>
+                      <label
+                        v-if="(cartVariantOptionsMap.get(item.id)?.length ?? 0) > 0"
+                        class="variant-switcher"
                       >
-                        <option
-                          v-for="option in cartVariantOptionsMap.get(item.id)"
-                          :key="option.sku"
-                          :value="option.sku"
+                        <span>修改規格</span>
+                        <select
+                          :value="item.variantSku"
+                          @change="updateCartItemVariant(item.id, ($event.target as HTMLSelectElement).value)"
                         >
-                          {{ option.label }}｜庫存 {{ option.stock }}
-                        </option>
-                      </select>
-                    </label>
-                    <small
-                      v-if="cartValidationMap.get(item.id)?.isInvalid"
-                      class="stock-warning"
-                    >
-                      {{ cartValidationMap.get(item.id)?.message }}
-                    </small>
+                          <option
+                            v-for="option in cartVariantOptionsMap.get(item.id)"
+                            :key="option.sku"
+                            :value="option.sku"
+                          >
+                            {{ option.label }}｜庫存 {{ option.stock }}
+                          </option>
+                        </select>
+                      </label>
+                      <small
+                        v-if="cartValidationMap.get(item.id)?.isInvalid"
+                        class="stock-warning"
+                      >
+                        {{ cartValidationMap.get(item.id)?.message }}
+                      </small>
+                    </div>
                   </div>
-                </div>
-              </td>
-              <td class="price-column" data-label="單價">NT$ {{ item.price.toFixed(2) }}</td>
-              <td class="quantity-column" data-label="數量">
-                <input
-                  class="quantity-input"
-                  :value="item.quantity"
-                  type="number"
-                  min="1"
-                  @input="cartStore.updateQuantity(item.id, Number(($event.target as HTMLInputElement).value))"
-                >
-              </td>
-              <td class="subtotal-column" data-label="小計">NT$ {{ (item.price * item.quantity).toFixed(2) }}</td>
-              <td class="action-column">
-                <button class="link-button" type="button" @click="cartStore.removeItem(item.id)">移除</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </article>
+                </td>
+                <td class="price-column" data-label="單價">NT$ {{ item.price.toFixed(2) }}</td>
+                <td class="quantity-column" data-label="數量">
+                  <input
+                    class="quantity-input"
+                    :value="item.quantity"
+                    type="number"
+                    min="1"
+                    @input="cartStore.updateQuantity(item.id, Number(($event.target as HTMLInputElement).value))"
+                  >
+                </td>
+                <td class="subtotal-column" data-label="小計">NT$ {{ (item.price * item.quantity).toFixed(2) }}</td>
+                <td class="action-column">
+                  <button class="link-button" type="button" @click="cartStore.removeItem(item.id)">移除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
+
+        <article class="panel customer-info-card">
+          <div class="section-head">
+            <div>
+              <h2>客戶資訊</h2>
+              <p>請填寫聯絡資料與取貨門市，方便客服確認與出貨。</p>
+            </div>
+          </div>
+          <div class="customer-form-grid">
+            <label class="checkout-field">
+              <span>Line ID</span>
+              <input v-model="checkoutForm.lineId" type="text" placeholder="填寫您的 Line ID，方便客服聯繫">
+            </label>
+            <label class="checkout-field">
+              <span>聯絡電話</span>
+              <input v-model="checkoutForm.phone" type="tel" placeholder="填寫收件人電話">
+            </label>
+            <label class="checkout-field customer-form-full">
+              <span>7-11 門市</span>
+              <input v-model="checkoutForm.convenienceStore" type="text" placeholder="填寫 7-11 門市名稱">
+            </label>
+            <label class="checkout-field customer-form-full">
+              <span>付款方式</span>
+              <div class="checkout-fixed-value">7-11 貨到付款</div>
+            </label>
+          </div>
+        </article>
+      </div>
 
       <aside class="panel summary-card">
         <h2>訂單摘要</h2>
@@ -270,22 +431,6 @@ const checkout = async () => {
         <div v-if="hasInvalidCartItems" class="summary-warning">
           購物車中有庫存不足的商品，請先調整數量或移除後再下單。
         </div>
-        <label class="checkout-field">
-          <span>Line ID</span>
-          <input v-model="checkoutForm.lineId" type="text" placeholder="填寫您的 Line ID，方便客服聯繫">
-        </label>
-        <label class="checkout-field">
-          <span>聯絡電話</span>
-          <input v-model="checkoutForm.phone" type="tel" placeholder="填寫收件人電話">
-        </label>
-        <label class="checkout-field">
-          <span>7-11 門市</span>
-          <input v-model="checkoutForm.convenienceStore" type="text" placeholder="例如：臺北車站門市">
-        </label>
-        <label class="checkout-field">
-          <span>付款方式</span>
-          <div class="checkout-fixed-value">7-11 貨到付款</div>
-        </label>
         <button class="primary" type="button" :disabled="submitting || hasInvalidCartItems" @click="checkout">
           {{ submitting ? '送出中...' : '送出訂單' }}
         </button>
@@ -298,6 +443,24 @@ const checkout = async () => {
       <p>可以先從商品目錄挑選想展示的商品，測試加入購物車與金額計算流程。</p>
       <NuxtLink class="primary-link" to="/products">去逛商品</NuxtLink>
     </div>
+
+    <section v-if="recommendedProducts.length" class="panel recommendation-section">
+      <div class="recommendation-head">
+        <div>
+          <p class="recommendation-kicker">For You</p>
+          <h2>您可能喜歡</h2>
+        </div>
+        <NuxtLink to="/products">看更多商品</NuxtLink>
+      </div>
+      <div class="recommendation-grid">
+        <ProductCard
+          v-for="product in recommendedProducts"
+          :key="product.id"
+          :product="product"
+          :show-detail-button="false"
+        />
+      </div>
+    </section>
   </section>
 </template>
 
@@ -317,11 +480,57 @@ const checkout = async () => {
   margin: 0.35rem 0 0.45rem;
 }
 
-.cart-layout {
+.recommendation-section {
   display: grid;
   gap: 1rem;
-  grid-template-columns: 1fr 340px;
+}
+
+.recommendation-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.recommendation-head h2,
+.recommendation-kicker {
+  margin: 0;
+}
+
+.recommendation-kicker {
+  color: var(--wp-text-muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.recommendation-head a {
+  color: var(--wp-accent, var(--wp-heading));
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.recommendation-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.cart-layout {
+  display: flex;
+  gap: 1rem;
   align-items: start;
+}
+
+.cart-main-column {
+  display: grid;
+  gap: 1rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.summary-card {
+  flex: 0 0 340px;
 }
 
 .cart-table {
@@ -347,6 +556,19 @@ const checkout = async () => {
   display: grid;
   gap: 0.2rem;
   min-width: 0;
+}
+
+.product-thumb-link {
+  flex: 0 0 auto;
+}
+
+.product-name-link {
+  color: var(--wp-heading);
+  text-decoration: none;
+}
+
+.product-name-link:hover {
+  color: var(--wp-accent);
 }
 
 .variant-switcher {
@@ -412,6 +634,21 @@ const checkout = async () => {
   gap: 0.75rem;
 }
 
+.customer-info-card {
+  display: grid;
+  gap: 1rem;
+}
+
+.customer-form-grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.customer-form-full {
+  grid-column: 1 / -1;
+}
+
 .success-box {
   padding: 0.85rem 1rem;
   border-radius: 0.5rem;
@@ -464,7 +701,19 @@ const checkout = async () => {
 
 @media (max-width: 960px) {
   .cart-layout {
+    flex-direction: column;
+  }
+
+  .customer-form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .customer-form-full {
+    grid-column: auto;
+  }
+
+  .recommendation-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .cart-table-card {
@@ -473,6 +722,78 @@ const checkout = async () => {
 }
 
 @media (max-width: 640px) {
+  .summary-card {
+    gap: 1rem;
+    padding: 1rem;
+    border-radius: 0.9rem;
+  }
+
+  .summary-card h2 {
+    margin: 0;
+    font-size: 1.1rem;
+  }
+
+  .summary-row {
+    align-items: flex-start;
+    gap: 0.85rem;
+    padding: 0.15rem 0;
+  }
+
+  .summary-row span {
+    font-size: 0.88rem;
+    line-height: 1.45;
+    color: var(--wp-text-muted);
+  }
+
+  .summary-row strong {
+    font-size: 0.98rem;
+    line-height: 1.35;
+    text-align: right;
+  }
+
+  .summary-row.total {
+    margin-top: 0.15rem;
+    padding-top: 1rem;
+    font-size: 1.08rem;
+  }
+
+  .summary-row.total span {
+    font-size: 0.92rem;
+  }
+
+  .summary-row.total strong {
+    font-size: 1.2rem;
+  }
+
+  .summary-warning {
+    padding: 0.85rem 0.95rem;
+    border-radius: 0.75rem;
+    background: rgba(198, 40, 40, 0.08);
+    font-size: 0.88rem;
+  }
+
+  .success-box {
+    gap: 0.45rem;
+    padding: 0.95rem 1rem;
+    border-radius: 0.8rem;
+  }
+
+  .summary-card .primary,
+  .summary-card .secondary {
+    min-height: 46px;
+    padding: 0.85rem 1rem;
+    font-size: 0.95rem;
+  }
+
+  .recommendation-head {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .recommendation-grid {
+    grid-template-columns: 1fr;
+  }
+
   .cart-table-card {
     overflow: visible;
   }

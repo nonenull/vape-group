@@ -1,6 +1,11 @@
 export default defineNuxtConfig({
   ssr: true,
   buildDir: process.env.NUXT_BUILD_DIR?.trim() || '.nuxt',
+  vite: {
+    server: {
+      allowedHosts: true,
+    },
+  },
   devtools: {
     enabled: true,
   },

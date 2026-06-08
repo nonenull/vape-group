@@ -2,8 +2,8 @@
 import { computed, ref, watch } from 'vue'
 import ProductCard from '~/components/store/ProductCard.vue'
 import { createBreadcrumbJsonLd, createProductJsonLd, sanitizeProductMetaDescription, useStoreSeo } from '~/composables/useStoreSeo'
-import { fetchProductDetail, fetchProducts } from '~/composables/useStoreApi'
-import { buildProductPath, parseProductIdFromRouteParam } from '~/composables/useProductSlug'
+import { fetchCategories, fetchProductDetail, fetchProducts } from '~/composables/useStoreApi'
+import { buildCategoryPath, buildProductPath, parseProductIdFromRouteParam } from '~/composables/useProductSlug'
 
 const tenantStore = useTenantStore()
 await tenantStore.initTenant()
@@ -15,7 +15,10 @@ const checkoutStore = useCheckoutStore()
 
 const productId = parseProductIdFromRouteParam(route.params.id)
 const product = await fetchProductDetail(productId)
-const { products } = await fetchProducts(1, 20)
+const [{ products }, categories] = await Promise.all([
+  fetchProducts(1, 20),
+  fetchCategories(),
+])
 
 if (!product) {
   throw createError({
@@ -26,6 +29,82 @@ if (!product) {
 
 const tenantName = computed(() => tenantStore.currentTenant?.name ?? 'Vape Group 商城')
 const canonicalPath = buildProductPath(product)
+const categoryById = new Map(categories.map((item) => [item.id, item]))
+const marketingCategoryPattern = /(新品|热卖|熱賣|推荐|推薦|精选|精選|人氣|人气|活動|活动|促銷|促销|限時|限时)/i
+const getCategoryDepth = (categoryId: number) => {
+  let depth = 0
+  let current = categoryById.get(categoryId) ?? null
+  const visited = new Set<number>()
+
+  while (current?.parentId != null && !visited.has(current.id)) {
+    visited.add(current.id)
+    current = categoryById.get(current.parentId) ?? null
+    if (current) {
+      depth += 1
+    }
+  }
+
+  return depth
+}
+const primaryCategory = computed(() => {
+  if (product.categoryId != null) {
+    const explicitPrimaryCategory = categoryById.get(product.categoryId)
+    if (explicitPrimaryCategory) {
+      return explicitPrimaryCategory
+    }
+  }
+
+  const matchedCategoryIds = product.categoryIds?.length
+    ? [...product.categoryIds]
+    : []
+
+  const rankedCategories = matchedCategoryIds
+    .map((categoryId, index) => {
+      const category = categoryById.get(categoryId)
+      if (!category) {
+        return null
+      }
+
+      return {
+        category,
+        index,
+        isMarketingCategory: marketingCategoryPattern.test(category.name),
+        depth: getCategoryDepth(category.id),
+      }
+    })
+    .filter((item): item is {
+      category: typeof categories[number]
+      index: number
+      isMarketingCategory: boolean
+      depth: number
+    } => item != null)
+    .sort((left, right) => {
+      if (left.isMarketingCategory !== right.isMarketingCategory) {
+        return Number(left.isMarketingCategory) - Number(right.isMarketingCategory)
+      }
+      if (left.depth !== right.depth) {
+        return right.depth - left.depth
+      }
+      return left.index - right.index
+    })
+
+  return rankedCategories[0]?.category ?? null
+})
+const breadcrumbItems = computed(() => {
+  const items: Array<{ name: string, path: string }> = [{ name: '首頁', path: '/' }]
+
+  if (primaryCategory.value) {
+    items.push({
+      name: primaryCategory.value.name,
+      path: buildCategoryPath(primaryCategory.value),
+    })
+  } else {
+    items.push({ name: '商品分類', path: '/products' })
+  }
+
+  items.push({ name: product.name, path: canonicalPath })
+  return items
+})
 
 if (route.path !== canonicalPath) {
   await navigateTo(canonicalPath, { redirectCode: 301, replace: true })
@@ -48,6 +127,18 @@ const productNote = computed(() => product.longDescription.trim())
 const productSpecificationHtml = computed(() => product.specificationHtml.trim())
 const productFaqHtml = computed(() => tenantStore.platformConfig.faqHtml.trim())
 const relatedProducts = computed(() => products.filter((item) => item.id !== product.id).slice(0, 4))
+const isSkuVariantInStock = (variant: typeof product.skuVariants[number]) => (variant.stock ?? product.stock) > 0
+const getDefaultSelectedOptions = () => {
+  const fallbackVariant = product.skuVariants.find((variant) => isSkuVariantInStock(variant)) ?? product.skuVariants[0] ?? null
+
+  if (fallbackVariant) {
+    return Object.fromEntries(
+      product.optionGroups.map((group) => [group.name, fallbackVariant.selections[group.name] ?? group.values[0] ?? '']),
+    )
+  }
+
+  return Object.fromEntries(product.optionGroups.map((group) => [group.name, group.values[0] ?? '']))
+}
 const selectedSkuVariant = computed(() => {
   if (!product.skuVariants.length) {
     return null
@@ -61,12 +152,13 @@ const displayStock = computed(() => {
   return variantStock == null ? product.stock : variantStock
 })
 const displayPrice = computed(() => selectedSkuVariant.value?.price ?? product.salePrice ?? product.price)
+const displaySku = computed(() => selectedSkuVariant.value?.sku ?? product.sku)
 const basicInfoSpecs = computed(() =>
   product.specs.map((spec) => {
     if (spec.label === 'SKU') {
       return {
         ...spec,
-        value: selectedSkuVariant.value?.sku ?? product.sku,
+        value: displaySku.value,
       }
     }
     if (spec.label === '庫存') {
@@ -115,6 +207,33 @@ const stockState = computed(() => {
     tone: 'ready',
   }
 })
+const canSelectOptionValue = (groupName: string, value: string) => {
+  if (!product.skuVariants.length) {
+    return true
+  }
+
+  return product.skuVariants.some((variant) => {
+    if (!isSkuVariantInStock(variant) || variant.selections[groupName] !== value) {
+      return false
+    }
+
+    return product.optionGroups.every((group) => {
+      if (group.name === groupName) {
+        return true
+      }
+
+      const selectedValue = selectedOptions.value[group.name]
+      return !selectedValue || variant.selections[group.name] === selectedValue
+    })
+  })
+}
+const isPurchaseDisabled = computed(() => {
+  if (product.skuVariants.length) {
+    return !selectedSkuVariant.value || displayStock.value <= 0
+  }
+
+  return displayStock.value <= 0
+})
 
 const hasIntroHtml = computed(() => /<[^>]+>/.test(productIntro.value))
 const hasNoteHtml = computed(() => /<[^>]+>/.test(productNote.value))
@@ -127,10 +246,32 @@ watch(() => product.id, () => {
   previewOffsetX.value = 0
   previewOffsetY.value = 0
   isPreviewDragging.value = false
-  selectedOptions.value = product.optionGroups.length
-    ? Object.fromEntries(product.optionGroups.map((group) => [group.name, group.values[0] ?? '']))
-    : {}
+  selectedOptions.value = product.optionGroups.length ? getDefaultSelectedOptions() : {}
 }, { immediate: true })
+
+watch(selectedOptions, (nextSelectedOptions) => {
+  if (!product.optionGroups.length || !product.skuVariants.length) {
+    return
+  }
+
+  for (const group of product.optionGroups) {
+    const currentValue = nextSelectedOptions[group.name]
+    if (currentValue && canSelectOptionValue(group.name, currentValue)) {
+      continue
+    }
+
+    const nextValue = group.values.find((value) => canSelectOptionValue(group.name, value))
+    if (!nextValue || nextValue === currentValue) {
+      continue
+    }
+
+    selectedOptions.value = {
+      ...nextSelectedOptions,
+      [group.name]: nextValue,
+    }
+    return
+  }
+}, { deep: true })
 
 const resetPreviewTransform = () => {
   previewScale.value = 1
@@ -260,6 +401,13 @@ const getCurrentPurchasePayload = () => {
     return null
   }
 
+  if (displayStock.value <= 0) {
+    if (import.meta.client) {
+      window.alert('當前規格已售罄')
+    }
+    return null
+  }
+
   const optionLabel = product.optionGroups
     .map((group) => `${group.name}：${selectedOptions.value[group.name]}`)
     .filter((item) => !item.endsWith('：'))
@@ -311,23 +459,26 @@ useStoreSeo({
   locale: 'zh_TW',
   lang: 'zh-Hant',
   jsonLd: [
-    createBreadcrumbJsonLd({
-      items: [
-        { name: '首頁', path: '/' },
-        { name: '商品目錄', path: '/products' },
-        { name: product.name, path: canonicalPath },
-      ],
-    }),
+    createBreadcrumbJsonLd({ items: breadcrumbItems.value }),
     createProductJsonLd({
       name: product.name,
       description,
       image: product.gallery.length ? product.gallery : [product.image],
-      sku: product.sku,
+      sku: displaySku.value,
+      mpn: product.sku,
       category: product.category,
       price: displayPrice.value,
       availability: displayStock.value > 0,
+      url: canonicalPath,
+      brand: product.brand,
       rating: product.rating,
       reviews: product.reviews,
+      additionalProperty: product.optionGroups
+        .map((group) => ({
+          name: group.name,
+          value: selectedOptions.value[group.name] || group.values[0] || '',
+        }))
+        .filter((item) => item.value),
     }),
   ],
 })
@@ -335,7 +486,15 @@ useStoreSeo({
 
 <template>
   <section class="product-detail-page">
-    <p class="breadcrumb">首頁 / 商品目錄 / {{ product.name }}</p>
+    <nav class="breadcrumb" aria-label="麵包屑">
+      <template v-for="(item, index) in breadcrumbItems" :key="`${item.path}-${index}`">
+        <NuxtLink v-if="index < breadcrumbItems.length - 1" :to="item.path" class="breadcrumb-link">
+          {{ item.name }}
+        </NuxtLink>
+        <span v-else class="breadcrumb-current">{{ item.name }}</span>
+        <span v-if="index < breadcrumbItems.length - 1" class="breadcrumb-separator"> - </span>
+      </template>
+    </nav>
 
     <div class="detail-layout panel">
       <div class="media-panel">
@@ -382,7 +541,8 @@ useStoreSeo({
                 :key="`${group.name}-${value}`"
                 type="button"
                 class="variant-button"
-                :class="{ active: selectedOptions[group.name] === value }"
+                :class="{ active: selectedOptions[group.name] === value, disabled: !canSelectOptionValue(group.name, value) }"
+                :disabled="!canSelectOptionValue(group.name, value)"
                 @click="selectedOptions[group.name] = value"
               >
                 {{ value }}
@@ -391,8 +551,8 @@ useStoreSeo({
           </div>
         </div>
         <div class="actions">
-          <button class="primary" type="button" @click="addCurrentProduct">加入購物車</button>
-          <button class="secondary" type="button" @click="buyNow">直接下單</button>
+          <button class="primary" type="button" :disabled="isPurchaseDisabled" @click="addCurrentProduct">加入購物車</button>
+          <button class="secondary" type="button" :disabled="isPurchaseDisabled" @click="buyNow">直接下單</button>
         </div>
       </div>
     </div>
@@ -520,6 +680,20 @@ useStoreSeo({
   color: var(--wp-text-muted);
 }
 
+.breadcrumb-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.breadcrumb-link:hover {
+  color: var(--tenant-accent, var(--wp-blue));
+  text-decoration: underline;
+}
+
+.breadcrumb-current {
+  color: var(--wp-heading);
+}
+
 .section-kicker {
   display: inline-flex;
   align-items: center;
@@ -601,6 +775,13 @@ useStoreSeo({
   height: auto;
   border-radius: 0.75rem;
   cursor: zoom-in;
+}
+
+.rich-copy :deep(img.aligncenter.size-full),
+.rich-copy :deep(img.aligncenter[class*='wp-image-']) {
+  display: block;
+  width: min(100%, 220px);
+  margin: 1rem auto;
 }
 
 .rich-copy :deep(.whit) {
@@ -991,7 +1172,7 @@ useStoreSeo({
 .variant-button {
   display: inline-flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   border-radius: 999px;
   padding: 0.55rem 0.85rem;
   min-height: 2.35rem;
@@ -999,9 +1180,23 @@ useStoreSeo({
   font-size: 0.82rem;
   line-height: 1.35;
   white-space: normal;
-  text-align: left;
+  text-align: center;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.variant-button.disabled,
+.variant-button:disabled {
+  border-color: rgba(16, 21, 23, 0.08);
+  background: #f3f5f7;
+  color: rgba(16, 21, 23, 0.38);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .detail-sections {
