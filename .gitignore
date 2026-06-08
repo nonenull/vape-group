@@ -24,7 +24,6 @@ yarn.lock
 # 日志
 *.log
 logs/
-uploads/
 
 # OS
 Thumbs.db
