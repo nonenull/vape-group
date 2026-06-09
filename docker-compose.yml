@@ -9,12 +9,14 @@ services:
     environment:
       PORT: 8088
       JWT_SECRET: vape-group-jwt-secret-key
+      UPLOAD_DIR: /uploads
     ports:
       - "8088:8088"
     networks:
       - wp_network
     volumes:
       - ./backend:/app
+      - ./uploads:/uploads
     restart: unless-stopped
 
   # 商城前端服务
