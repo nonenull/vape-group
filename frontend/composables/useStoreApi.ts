@@ -343,8 +343,7 @@ function normalizeBrand(input: BrandResponse, assetBaseURL: string): Brand {
   }
 }
 
-function normalizeTenant(input: TenantResponse): TenantInfo {
-  const assetBaseURL = getPublicAssetBaseURL()
+function normalizeTenant(input: TenantResponse, assetBaseURL: string): TenantInfo {
   const homeBanner: HomeBannerConfig = {
     enabled: Boolean(input.home_banner?.enabled ?? false),
     title: input.home_banner?.title?.trim() ?? '',
@@ -474,6 +473,7 @@ export async function fetchBrands() {
 }
 
 export async function fetchTenantBundle() {
+  const assetBaseURL = getPublicAssetBaseURL()
   const client = createApiClient()
   const [tenantResponse, platformConfigResponse] = await Promise.all([
     client.get<TenantResponse>('/api/tenant/current'),
@@ -481,7 +481,7 @@ export async function fetchTenantBundle() {
   ])
 
   return {
-    tenant: normalizeTenant(tenantResponse.data),
+    tenant: normalizeTenant(tenantResponse.data, assetBaseURL),
     platformConfig: normalizePlatformConfig(platformConfigResponse.data),
   }
 }
