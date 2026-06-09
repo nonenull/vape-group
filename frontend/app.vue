@@ -18,6 +18,12 @@ const headerKeyword = ref('')
 const showBackToTop = ref(false)
 const themeVars = computed(() => tenantStore.currentTenant ? tenantStore.getThemeVariables(tenantStore.currentTenant) : {})
 
+useHead(() => ({
+  link: [
+    { rel: 'icon', href: tenantLogo.value || '/favicon.ico' },
+  ],
+}))
+
 const syncBackToTopState = () => {
   if (!import.meta.client) {
     return
