@@ -344,11 +344,12 @@ function normalizeBrand(input: BrandResponse, assetBaseURL: string): Brand {
 }
 
 function normalizeTenant(input: TenantResponse): TenantInfo {
+  const assetBaseURL = getPublicAssetBaseURL()
   const homeBanner: HomeBannerConfig = {
     enabled: Boolean(input.home_banner?.enabled ?? false),
     title: input.home_banner?.title?.trim() ?? '',
     subtitle: input.home_banner?.subtitle?.trim() ?? '',
-    image: input.home_banner?.image?.trim() ?? '',
+    image: resolveAssetURL(input.home_banner?.image?.trim() ?? '', assetBaseURL),
     link: input.home_banner?.link?.trim() ?? '',
     buttonText: input.home_banner?.button_text?.trim() ?? '',
   }
@@ -374,8 +375,8 @@ function normalizeTenant(input: TenantResponse): TenantInfo {
     homeTemplate: input.home_template,
     homeModuleOrder: Array.isArray(input.home_module_order) ? input.home_module_order : [],
     primaryBrandId: input.primary_brand_id ?? null,
-    previewImage: input.preview_image,
-    logoImage: input.logo_image,
+    previewImage: resolveAssetURL(input.preview_image, assetBaseURL),
+    logoImage: resolveAssetURL(input.logo_image, assetBaseURL),
     accentColor: input.accent_color,
     accentStrongColor: input.accent_strong_color,
     surfaceColor: input.surface_color,

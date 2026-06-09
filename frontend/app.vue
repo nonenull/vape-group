@@ -11,6 +11,7 @@ await tenantStore.initTenant()
 const tenantName = computed(() => tenantStore.currentTenant?.name ?? 'Vape Group 商城')
 const supportText = computed(() => tenantStore.currentTenant?.supportText ?? '支援訂單追蹤與商品諮詢')
 const tickerText = computed(() => tenantStore.currentTenant?.announcement || '歡迎來到本站，最新活動與優惠資訊將在此更新。')
+const tenantLogo = computed(() => tenantStore.currentTenant?.logoImage?.trim() || '/logo.svg')
 const lineContactUrl = computed(() => tenantStore.platformConfig.lineContactUrl.trim())
 const showCartShortcut = computed(() => cartStore.showCartShortcut && cartStore.itemCount > 0)
 const headerKeyword = ref('')
@@ -61,7 +62,7 @@ onUnmounted(() => {
       <div class="header-inner">
         <NuxtLink to="/" class="brand">
           <div class="brand-mark">
-            <img :alt="tenantName" class="logo" src="/logo.svg" width="42" height="42">
+            <img :alt="tenantName" class="logo" :src="tenantLogo" width="42" height="42">
           </div>
           <div>
             <strong>{{ tenantName }}</strong>
