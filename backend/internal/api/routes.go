@@ -92,8 +92,8 @@ func SetupRoutes(router *gin.Engine, db *gorm.DB, cfg *config.Config) {
 	adminGroup.Use(middleware.AuthMiddleware(db, cfg), middleware.AdminMiddleware())
 	{
 		adminGroup.GET("/tenants", GetTenantsHandler(db))
-		adminGroup.POST("/tenants", CreateTenantHandler(db))
-		adminGroup.PUT("/tenants/:id", UpdateTenantHandler(db))
+		adminGroup.POST("/tenants", CreateTenantHandler(db, cfg))
+		adminGroup.PUT("/tenants/:id", UpdateTenantHandler(db, cfg))
 		adminGroup.DELETE("/tenants/:id", DeleteTenantHandler(db))
 		adminGroup.POST("/tenants/:id/domains", AddTenantDomainHandler(db, cfg))
 		adminGroup.DELETE("/tenants/:id/domains/:domain", RemoveTenantDomainHandler(db, cfg))

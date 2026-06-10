@@ -2,10 +2,10 @@ package api
 
 import (
 	"bytes"
-	"crypto/rand"
 	"context"
-	"encoding/json"
+	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,8 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unicode"
 	"time"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mozillazg/go-pinyin"
@@ -101,8 +101,9 @@ type tenantDomainPayload struct {
 }
 
 type tenantDomainOperationResponse struct {
-	TenantResponse tenantResponse       `json:"tenant"`
-	NPMResult      *service.NPMResult   `json:"npm_result,omitempty"`
+	TenantResponse tenantResponse      `json:"tenant"`
+	NPMResult      *service.NPMResult  `json:"npm_result,omitempty"`
+	GSCResults     []service.GSCResult `json:"gsc_results,omitempty"`
 }
 
 type homeBannerConfig struct {
@@ -123,22 +124,22 @@ type homeSectionConfig struct {
 }
 
 type platformConfigPayload struct {
-	LineContactURL      string `json:"line_contact_url"`
-	FaqHTML             string `json:"faq_html"`
-	ShippingFee         float64 `json:"shipping_fee"`
+	LineContactURL        string  `json:"line_contact_url"`
+	FaqHTML               string  `json:"faq_html"`
+	ShippingFee           float64 `json:"shipping_fee"`
 	FreeShippingThreshold float64 `json:"free_shipping_threshold"`
-	FeaturedCategoryIDs []uint `json:"featured_category_ids"`
-	FeaturedBrandIDs    []uint `json:"featured_brand_ids"`
+	FeaturedCategoryIDs   []uint  `json:"featured_category_ids"`
+	FeaturedBrandIDs      []uint  `json:"featured_brand_ids"`
 }
 
 type platformConfigResponse struct {
-	ID                  uint   `json:"id"`
-	LineContactURL      string `json:"line_contact_url"`
-	FaqHTML             string `json:"faq_html"`
-	ShippingFee         float64 `json:"shipping_fee"`
+	ID                    uint    `json:"id"`
+	LineContactURL        string  `json:"line_contact_url"`
+	FaqHTML               string  `json:"faq_html"`
+	ShippingFee           float64 `json:"shipping_fee"`
 	FreeShippingThreshold float64 `json:"free_shipping_threshold"`
-	FeaturedCategoryIDs []uint `json:"featured_category_ids"`
-	FeaturedBrandIDs    []uint `json:"featured_brand_ids"`
+	FeaturedCategoryIDs   []uint  `json:"featured_category_ids"`
+	FeaturedBrandIDs      []uint  `json:"featured_brand_ids"`
 }
 
 type domainPayload struct {
@@ -159,41 +160,41 @@ type domainSyncPayload struct {
 }
 
 type domainResponse struct {
-	ID            uint              `json:"id"`
-	DomainName    string            `json:"domain_name"`
-	Registrar     string            `json:"registrar"`
-	ExpireDate    *string           `json:"expire_date,omitempty"`
+	ID            uint               `json:"id"`
+	DomainName    string             `json:"domain_name"`
+	Registrar     string             `json:"registrar"`
+	ExpireDate    *string            `json:"expire_date,omitempty"`
 	DNSRecords    []dnsRecordPayload `json:"dns_records"`
-	IsBlocked     bool              `json:"is_blocked"`
-	LastCheckIP   *string           `json:"last_check_ip,omitempty"`
-	LastCheckedAt *time.Time        `json:"last_checked_at,omitempty"`
-	CreatedAt     time.Time         `json:"created_at"`
-	UpdatedAt     time.Time         `json:"updated_at"`
+	IsBlocked     bool               `json:"is_blocked"`
+	LastCheckIP   *string            `json:"last_check_ip,omitempty"`
+	LastCheckedAt *time.Time         `json:"last_checked_at,omitempty"`
+	CreatedAt     time.Time          `json:"created_at"`
+	UpdatedAt     time.Time          `json:"updated_at"`
 }
 
 type productPayload struct {
-	SKU               string   `json:"sku"`
-	BaseName          string   `json:"base_name"`
-	BasePrice         float64  `json:"base_price"`
-	BaseStockQuantity int      `json:"base_stock_quantity"`
-	Category          string   `json:"category"`
-	CategoryID        *uint    `json:"category_id"`
-	CategoryIDs       []uint   `json:"category_ids"`
-	Brand             string   `json:"brand"`
-	BrandID           *uint    `json:"brand_id"`
-	PreviewImage      string   `json:"preview_image"`
-	Gallery           []string `json:"gallery"`
-	DetailImages      []string `json:"detail_images"`
-	Status            string   `json:"status"`
-	IsActive          bool     `json:"is_active"`
-	Description       string   `json:"description"`
-	LongDescription   string   `json:"long_description"`
-	SpecificationHTML string   `json:"specification_html"`
-	Badge             string   `json:"badge"`
-	Rating            float64  `json:"rating"`
-	Reviews           int      `json:"reviews"`
-	Flavors           []string `json:"flavors"`
-	Variants          []productVariantPayload `json:"variants"`
+	SKU               string                      `json:"sku"`
+	BaseName          string                      `json:"base_name"`
+	BasePrice         float64                     `json:"base_price"`
+	BaseStockQuantity int                         `json:"base_stock_quantity"`
+	Category          string                      `json:"category"`
+	CategoryID        *uint                       `json:"category_id"`
+	CategoryIDs       []uint                      `json:"category_ids"`
+	Brand             string                      `json:"brand"`
+	BrandID           *uint                       `json:"brand_id"`
+	PreviewImage      string                      `json:"preview_image"`
+	Gallery           []string                    `json:"gallery"`
+	DetailImages      []string                    `json:"detail_images"`
+	Status            string                      `json:"status"`
+	IsActive          bool                        `json:"is_active"`
+	Description       string                      `json:"description"`
+	LongDescription   string                      `json:"long_description"`
+	SpecificationHTML string                      `json:"specification_html"`
+	Badge             string                      `json:"badge"`
+	Rating            float64                     `json:"rating"`
+	Reviews           int                         `json:"reviews"`
+	Flavors           []string                    `json:"flavors"`
+	Variants          []productVariantPayload     `json:"variants"`
 	OptionGroups      []productOptionGroupPayload `json:"option_groups"`
 	SkuVariants       []productSkuVariantPayload  `json:"sku_variants"`
 }
@@ -209,12 +210,12 @@ func getOrCreatePlatformConfig(db *gorm.DB) (models.PlatformConfig, error) {
 	}
 
 	config = models.PlatformConfig{
-		LineContactURL:      "",
-		FaqHTML:             "",
-		ShippingFee:         90,
+		LineContactURL:        "",
+		FaqHTML:               "",
+		ShippingFee:           90,
 		FreeShippingThreshold: 1200,
-		FeaturedCategoryIDs: models.UIntArray{},
-		FeaturedBrandIDs:    models.UIntArray{},
+		FeaturedCategoryIDs:   models.UIntArray{},
+		FeaturedBrandIDs:      models.UIntArray{},
 	}
 	if err := db.Create(&config).Error; err != nil {
 		return config, err
@@ -224,13 +225,13 @@ func getOrCreatePlatformConfig(db *gorm.DB) (models.PlatformConfig, error) {
 
 func platformConfigToResponse(config models.PlatformConfig) platformConfigResponse {
 	return platformConfigResponse{
-		ID:                  config.ID,
-		LineContactURL:      config.LineContactURL,
-		FaqHTML:             config.FaqHTML,
-		ShippingFee:         config.ShippingFee,
+		ID:                    config.ID,
+		LineContactURL:        config.LineContactURL,
+		FaqHTML:               config.FaqHTML,
+		ShippingFee:           config.ShippingFee,
 		FreeShippingThreshold: config.FreeShippingThreshold,
-		FeaturedCategoryIDs: []uint(config.FeaturedCategoryIDs),
-		FeaturedBrandIDs:    []uint(config.FeaturedBrandIDs),
+		FeaturedCategoryIDs:   []uint(config.FeaturedCategoryIDs),
+		FeaturedBrandIDs:      []uint(config.FeaturedBrandIDs),
 	}
 }
 
@@ -375,45 +376,45 @@ type productSkuVariantPayload struct {
 }
 
 type productResponse struct {
-	ID                  uint                   `json:"id"`
-	SKU                 string                 `json:"sku"`
-	Slug                string                 `json:"slug"`
-	BaseName            string                 `json:"base_name"`
-	BasePrice           float64                `json:"base_price"`
-	BaseStockQuantity   int                    `json:"base_stock_quantity"`
-	BaseImages          []string               `json:"base_images"`
-	DetailImages        []string               `json:"detail_images"`
-	Specifications      map[string]interface{} `json:"specifications"`
-	IsActive            bool                   `json:"is_active"`
-	Category            string                 `json:"category"`
-	CategoryID          *uint                  `json:"category_id,omitempty"`
-	CategoryIDs         []uint                 `json:"category_ids"`
-	Brand               string                 `json:"brand"`
-	BrandID             *uint                  `json:"brand_id,omitempty"`
-	PreviewImage        string                 `json:"preview_image"`
-	Gallery             []string               `json:"gallery"`
-	Status              string                 `json:"status"`
-	Description         string                 `json:"description"`
-	LongDescription     string                 `json:"long_description"`
-	SpecificationHTML   string                 `json:"specification_html"`
-	Badge               string                 `json:"badge"`
-	Rating              float64                `json:"rating"`
-	Reviews             int                    `json:"reviews"`
-	Flavors             []string               `json:"flavors"`
-	Variants            []productVariantPayload `json:"variants"`
+	ID                  uint                        `json:"id"`
+	SKU                 string                      `json:"sku"`
+	Slug                string                      `json:"slug"`
+	BaseName            string                      `json:"base_name"`
+	BasePrice           float64                     `json:"base_price"`
+	BaseStockQuantity   int                         `json:"base_stock_quantity"`
+	BaseImages          []string                    `json:"base_images"`
+	DetailImages        []string                    `json:"detail_images"`
+	Specifications      map[string]interface{}      `json:"specifications"`
+	IsActive            bool                        `json:"is_active"`
+	Category            string                      `json:"category"`
+	CategoryID          *uint                       `json:"category_id,omitempty"`
+	CategoryIDs         []uint                      `json:"category_ids"`
+	Brand               string                      `json:"brand"`
+	BrandID             *uint                       `json:"brand_id,omitempty"`
+	PreviewImage        string                      `json:"preview_image"`
+	Gallery             []string                    `json:"gallery"`
+	Status              string                      `json:"status"`
+	Description         string                      `json:"description"`
+	LongDescription     string                      `json:"long_description"`
+	SpecificationHTML   string                      `json:"specification_html"`
+	Badge               string                      `json:"badge"`
+	Rating              float64                     `json:"rating"`
+	Reviews             int                         `json:"reviews"`
+	Flavors             []string                    `json:"flavors"`
+	Variants            []productVariantPayload     `json:"variants"`
 	OptionGroups        []productOptionGroupPayload `json:"option_groups"`
-	SkuVariants         []productSkuVariantPayload `json:"sku_variants"`
-	CustomName          *string                `json:"custom_name,omitempty"`
-	CustomDescription   *string                `json:"custom_description,omitempty"`
-	CustomPrice         *float64               `json:"custom_price,omitempty"`
-	CustomStockQuantity *int                   `json:"custom_stock_quantity,omitempty"`
-	CustomImages        []string               `json:"custom_images,omitempty"`
-	CustomDetailImages  []string               `json:"custom_detail_images,omitempty"`
-	SEOTitle            *string                `json:"seo_title,omitempty"`
-	SEODescription      *string                `json:"seo_description,omitempty"`
-	IsVisible           bool                   `json:"is_visible"`
-	CreatedAt           interface{}            `json:"created_at"`
-	UpdatedAt           interface{}            `json:"updated_at"`
+	SkuVariants         []productSkuVariantPayload  `json:"sku_variants"`
+	CustomName          *string                     `json:"custom_name,omitempty"`
+	CustomDescription   *string                     `json:"custom_description,omitempty"`
+	CustomPrice         *float64                    `json:"custom_price,omitempty"`
+	CustomStockQuantity *int                        `json:"custom_stock_quantity,omitempty"`
+	CustomImages        []string                    `json:"custom_images,omitempty"`
+	CustomDetailImages  []string                    `json:"custom_detail_images,omitempty"`
+	SEOTitle            *string                     `json:"seo_title,omitempty"`
+	SEODescription      *string                     `json:"seo_description,omitempty"`
+	IsVisible           bool                        `json:"is_visible"`
+	CreatedAt           interface{}                 `json:"created_at"`
+	UpdatedAt           interface{}                 `json:"updated_at"`
 }
 
 type productOverridePayload struct {
@@ -709,9 +710,9 @@ type uploadImageResponse struct {
 }
 
 type bulkProductUpdatePayload struct {
-	ProductIDs []uint   `json:"product_ids"`
-	Status     *string  `json:"status"`
-	IsActive   *bool    `json:"is_active"`
+	ProductIDs []uint  `json:"product_ids"`
+	Status     *string `json:"status"`
+	IsActive   *bool   `json:"is_active"`
 }
 
 var uploadFilenameUnsafeChars = regexp.MustCompile(`[^a-z0-9]+`)
@@ -1800,36 +1801,36 @@ func tenantToResponse(tenant models.Tenant) tenantResponse {
 	}
 
 	return tenantResponse{
-		ID:              tenant.ID,
-		Domain:          tenant.Domain,
-		BoundDomains:    jsonArrayToStrings(tenant.BoundDomains),
-		NPMProxyHostID:  jsonUint(tenant.ThemeConfig, "npmProxyHostId"),
-		Name:            tenant.Name,
-		IsActive:        tenant.IsActive,
-		Theme:           jsonString(tenant.ThemeConfig, "theme", ""),
-		HomeTemplate:    jsonString(tenant.ThemeConfig, "homeTemplate", ""),
-		HomeModuleOrder: jsonStringSlice(tenant.ThemeConfig, "homeModuleOrder", []string{}),
-		HomeBanner:      homeBanner,
-		HomeSections:    jsonSectionConfigs(tenant.ThemeConfig, "homeSections"),
-		PrimaryBrandID:  jsonUint(tenant.ThemeConfig, "primaryBrandId"),
-		PreviewImage:    jsonString(tenant.ThemeConfig, "previewImage", ""),
-		LogoImage:       jsonString(tenant.ThemeConfig, "logoImage", ""),
-		AccentColor:     jsonString(tenant.ThemeConfig, "accentColor", ""),
+		ID:                tenant.ID,
+		Domain:            tenant.Domain,
+		BoundDomains:      jsonArrayToStrings(tenant.BoundDomains),
+		NPMProxyHostID:    jsonUint(tenant.ThemeConfig, "npmProxyHostId"),
+		Name:              tenant.Name,
+		IsActive:          tenant.IsActive,
+		Theme:             jsonString(tenant.ThemeConfig, "theme", ""),
+		HomeTemplate:      jsonString(tenant.ThemeConfig, "homeTemplate", ""),
+		HomeModuleOrder:   jsonStringSlice(tenant.ThemeConfig, "homeModuleOrder", []string{}),
+		HomeBanner:        homeBanner,
+		HomeSections:      jsonSectionConfigs(tenant.ThemeConfig, "homeSections"),
+		PrimaryBrandID:    jsonUint(tenant.ThemeConfig, "primaryBrandId"),
+		PreviewImage:      jsonString(tenant.ThemeConfig, "previewImage", ""),
+		LogoImage:         jsonString(tenant.ThemeConfig, "logoImage", ""),
+		AccentColor:       jsonString(tenant.ThemeConfig, "accentColor", ""),
 		AccentStrongColor: jsonString(tenant.ThemeConfig, "accentStrongColor", ""),
-		SurfaceColor:     jsonString(tenant.ThemeConfig, "surfaceColor", ""),
-		PageBgColor:      jsonString(tenant.ThemeConfig, "pageBgColor", ""),
-		CardBgColor:      jsonString(tenant.ThemeConfig, "cardBgColor", ""),
-		TextColor:        jsonString(tenant.ThemeConfig, "textColor", ""),
-		MutedTextColor:   jsonString(tenant.ThemeConfig, "mutedTextColor", ""),
-		BorderColor:      jsonString(tenant.ThemeConfig, "borderColor", ""),
-		HeroBgColor:      jsonString(tenant.ThemeConfig, "heroBgColor", ""),
-		TagBgColor:       jsonString(tenant.ThemeConfig, "tagBgColor", ""),
-		HeroTitle:        jsonString(tenant.ThemeConfig, "heroTitle", ""),
-		Tagline:          jsonString(tenant.ThemeConfig, "tagline", ""),
-		Announcement:     jsonString(tenant.ThemeConfig, "announcement", ""),
-		SupportText:      jsonString(tenant.ThemeConfig, "supportText", ""),
-		SEOTitle:         jsonString(tenant.SEOConfig, "title", ""),
-		SEODescription:   jsonString(tenant.SEOConfig, "description", ""),
+		SurfaceColor:      jsonString(tenant.ThemeConfig, "surfaceColor", ""),
+		PageBgColor:       jsonString(tenant.ThemeConfig, "pageBgColor", ""),
+		CardBgColor:       jsonString(tenant.ThemeConfig, "cardBgColor", ""),
+		TextColor:         jsonString(tenant.ThemeConfig, "textColor", ""),
+		MutedTextColor:    jsonString(tenant.ThemeConfig, "mutedTextColor", ""),
+		BorderColor:       jsonString(tenant.ThemeConfig, "borderColor", ""),
+		HeroBgColor:       jsonString(tenant.ThemeConfig, "heroBgColor", ""),
+		TagBgColor:        jsonString(tenant.ThemeConfig, "tagBgColor", ""),
+		HeroTitle:         jsonString(tenant.ThemeConfig, "heroTitle", ""),
+		Tagline:           jsonString(tenant.ThemeConfig, "tagline", ""),
+		Announcement:      jsonString(tenant.ThemeConfig, "announcement", ""),
+		SupportText:       jsonString(tenant.ThemeConfig, "supportText", ""),
+		SEOTitle:          jsonString(tenant.SEOConfig, "title", ""),
+		SEODescription:    jsonString(tenant.SEOConfig, "description", ""),
 	}
 }
 
@@ -1874,7 +1875,7 @@ func tenantPayloadToModel(payload tenantPayload, existing *models.Tenant) models
 		"pageBgColor":       payload.PageBgColor,
 		"cardBgColor":       payload.CardBgColor,
 		"textColor":         payload.TextColor,
-		"mutedTextColor": payload.MutedTextColor,
+		"mutedTextColor":    payload.MutedTextColor,
 		"borderColor":       payload.BorderColor,
 		"heroBgColor":       payload.HeroBgColor,
 		"tagBgColor":        payload.TagBgColor,
@@ -2041,25 +2042,25 @@ func productPayloadToModel(payload productPayload, existing *models.Product) mod
 	model.BaseImages = stringSliceToJSONArray(gallery)
 	model.DetailImages = stringSliceToJSONArray(payload.DetailImages)
 	model.Specifications = models.JSONMap{
-		"category":        payload.Category,
-		"categoryId":      payload.CategoryID,
-		"categoryIds":     categoryIDs,
-		"brand":           payload.Brand,
-		"brandId":         payload.BrandID,
-		"previewImage":    payload.PreviewImage,
-		"gallery":         stringSliceToJSONArray(gallery),
-		"detailImages":    stringSliceToJSONArray(payload.DetailImages),
-		"status":          payload.Status,
-		"description":     payload.Description,
-		"longDescription": payload.LongDescription,
+		"category":          payload.Category,
+		"categoryId":        payload.CategoryID,
+		"categoryIds":       categoryIDs,
+		"brand":             payload.Brand,
+		"brandId":           payload.BrandID,
+		"previewImage":      payload.PreviewImage,
+		"gallery":           stringSliceToJSONArray(gallery),
+		"detailImages":      stringSliceToJSONArray(payload.DetailImages),
+		"status":            payload.Status,
+		"description":       payload.Description,
+		"longDescription":   payload.LongDescription,
 		"specificationHtml": payload.SpecificationHTML,
-		"badge":           payload.Badge,
-		"rating":          payload.Rating,
-		"reviews":         payload.Reviews,
-		"flavors":         stringSliceToJSONArray(flavors),
-		"variants":        variantSliceToJSONArray(variants),
-		"optionGroups":    optionGroupSliceToJSONArray(optionGroups),
-		"skuVariants":     skuVariantSliceToJSONArray(skuVariants),
+		"badge":             payload.Badge,
+		"rating":            payload.Rating,
+		"reviews":           payload.Reviews,
+		"flavors":           stringSliceToJSONArray(flavors),
+		"variants":          variantSliceToJSONArray(variants),
+		"optionGroups":      optionGroupSliceToJSONArray(optionGroups),
+		"skuVariants":       skuVariantSliceToJSONArray(skuVariants),
 	}
 	return model
 }
@@ -2347,6 +2348,33 @@ func removeDomainFromList(values []string, domain string) ([]string, bool) {
 		result = append(result, item)
 	}
 	return result, found
+}
+
+func diffAddedDomains(previous []string, current []string) []string {
+	previousSet := make(map[string]struct{}, len(previous))
+	for _, domain := range normalizeDomainList(previous) {
+		previousSet[domain] = struct{}{}
+	}
+
+	result := make([]string, 0, len(current))
+	for _, domain := range normalizeDomainList(current) {
+		if _, exists := previousSet[domain]; exists {
+			continue
+		}
+		result = append(result, domain)
+	}
+	return result
+}
+
+func syncDomainsToGSC(cfg *config.Config, domains []string) []service.GSCResult {
+	gscService, err := service.NewGSCService(cfg)
+	if err != nil {
+		return []service.GSCResult{{
+			Status:  "skipped",
+			Message: err.Error(),
+		}}
+	}
+	return gscService.EnsureSites(domains)
 }
 
 func syncTenantDomainsToNPM(cfg *config.Config, primaryDomain string, boundDomains []string) (*service.NPMResult, error) {
@@ -3793,7 +3821,7 @@ func GetTenantsHandler(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-func CreateTenantHandler(db *gorm.DB) gin.HandlerFunc {
+func CreateTenantHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var payload tenantPayload
 		if err := c.ShouldBindJSON(&payload); err != nil {
@@ -3813,11 +3841,14 @@ func CreateTenantHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
+		addedDomains := append([]string{tenant.Domain}, jsonArrayToStrings(tenant.BoundDomains)...)
+		_ = syncDomainsToGSC(cfg, addedDomains)
+
 		c.JSON(http.StatusCreated, tenantToResponse(tenant))
 	}
 }
 
-func UpdateTenantHandler(db *gorm.DB) gin.HandlerFunc {
+func UpdateTenantHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tenantID, err := getUintParam(c, "id")
 		if err != nil {
@@ -3842,12 +3873,15 @@ func UpdateTenantHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Tenant not found"})
 			return
 		}
+		previousDomains := append([]string{normalizeDomain(tenant.Domain)}, jsonArrayToStrings(tenant.BoundDomains)...)
 
 		tenant = tenantPayloadToModel(payload, &tenant)
 		if err := db.Save(&tenant).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update tenant"})
 			return
 		}
+		currentDomains := append([]string{normalizeDomain(tenant.Domain)}, jsonArrayToStrings(tenant.BoundDomains)...)
+		_ = syncDomainsToGSC(cfg, diffAddedDomains(previousDomains, currentDomains))
 
 		c.JSON(http.StatusOK, tenantToResponse(tenant))
 	}
@@ -3944,10 +3978,12 @@ func AddTenantDomainHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 				NPMUpdated: false,
 			}
 		}
+		gscResults := syncDomainsToGSC(cfg, []string{domain})
 
 		c.JSON(http.StatusOK, tenantDomainOperationResponse{
 			TenantResponse: tenantToResponse(tenant),
 			NPMResult:      npmResult,
+			GSCResults:     gscResults,
 		})
 	}
 }
@@ -4062,6 +4098,7 @@ func SetTenantPrimaryDomainHandler(db *gorm.DB, cfg *config.Config) gin.HandlerF
 
 		c.JSON(http.StatusOK, tenantDomainOperationResponse{
 			TenantResponse: tenantToResponse(tenant),
+			GSCResults:     syncDomainsToGSC(cfg, []string{domain}),
 		})
 	}
 }
@@ -4090,7 +4127,7 @@ func UpdateAdminPlatformConfigHandler(db *gorm.DB) gin.HandlerFunc {
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load platform config"})
 			return
-			}
+		}
 
 		config.LineContactURL = strings.TrimSpace(payload.LineContactURL)
 		config.FaqHTML = strings.TrimSpace(payload.FaqHTML)
