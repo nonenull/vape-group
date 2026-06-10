@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -2369,12 +2370,36 @@ func diffAddedDomains(previous []string, current []string) []string {
 func syncDomainsToGSC(cfg *config.Config, domains []string) []service.GSCResult {
 	gscService, err := service.NewGSCService(cfg)
 	if err != nil {
+		log.Printf("GSC sync skipped: domains=%v error=%v", normalizeDomainList(domains), err)
 		return []service.GSCResult{{
 			Status:  "skipped",
 			Message: err.Error(),
 		}}
 	}
 	return gscService.EnsureSites(domains)
+}
+
+func logTenantGSCSyncResults(action string, tenantID uint, domains []string, results []service.GSCResult) {
+	normalizedDomains := normalizeDomainList(domains)
+	if len(results) == 0 {
+		log.Printf("Tenant %s GSC sync completed with no results: tenant_id=%d domains=%v", action, tenantID, normalizedDomains)
+		return
+	}
+
+	for _, result := range results {
+		if result.Status == "added" || result.Status == "exists_or_no_permission" {
+			continue
+		}
+		log.Printf(
+			"Tenant %s GSC sync result: tenant_id=%d domains=%v site_url=%q status=%q message=%q",
+			action,
+			tenantID,
+			normalizedDomains,
+			result.SiteURL,
+			result.Status,
+			result.Message,
+		)
+	}
 }
 
 func syncTenantDomainsToNPM(cfg *config.Config, primaryDomain string, boundDomains []string) (*service.NPMResult, error) {
@@ -3825,24 +3850,39 @@ func CreateTenantHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var payload tenantPayload
 		if err := c.ShouldBindJSON(&payload); err != nil {
+			log.Printf("Create tenant payload bind failed: error=%v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant payload"})
 			return
 		}
 		normalizedPrimary := normalizeDomain(payload.Domain)
 		normalizedBoundDomains := normalizeDomainList(payload.BoundDomains)
 		if err := validateTenantDomains(db, 0, normalizedPrimary, normalizedBoundDomains); err != nil {
+			log.Printf(
+				"Create tenant validation failed: primary_domain=%q bound_domains=%v error=%v",
+				normalizedPrimary,
+				normalizedBoundDomains,
+				err,
+			)
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 
 		tenant := tenantPayloadToModel(payload, nil)
 		if err := db.Create(&tenant).Error; err != nil {
+			log.Printf(
+				"Create tenant database insert failed: tenant_name=%q primary_domain=%q bound_domains=%v error=%v",
+				tenant.Name,
+				tenant.Domain,
+				jsonArrayToStrings(tenant.BoundDomains),
+				err,
+			)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create tenant"})
 			return
 		}
 
 		addedDomains := append([]string{tenant.Domain}, jsonArrayToStrings(tenant.BoundDomains)...)
-		_ = syncDomainsToGSC(cfg, addedDomains)
+		gscResults := syncDomainsToGSC(cfg, addedDomains)
+		logTenantGSCSyncResults("create", tenant.ID, addedDomains, gscResults)
 
 		c.JSON(http.StatusCreated, tenantToResponse(tenant))
 	}
@@ -3852,24 +3892,34 @@ func UpdateTenantHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tenantID, err := getUintParam(c, "id")
 		if err != nil {
+			log.Printf("Update tenant id parse failed: raw_id=%q error=%v", c.Param("id"), err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant id"})
 			return
 		}
 
 		var payload tenantPayload
 		if err := c.ShouldBindJSON(&payload); err != nil {
+			log.Printf("Update tenant payload bind failed: tenant_id=%d error=%v", tenantID, err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tenant payload"})
 			return
 		}
 		normalizedPrimary := normalizeDomain(payload.Domain)
 		normalizedBoundDomains := normalizeDomainList(payload.BoundDomains)
 		if err := validateTenantDomains(db, tenantID, normalizedPrimary, normalizedBoundDomains); err != nil {
+			log.Printf(
+				"Update tenant validation failed: tenant_id=%d primary_domain=%q bound_domains=%v error=%v",
+				tenantID,
+				normalizedPrimary,
+				normalizedBoundDomains,
+				err,
+			)
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 
 		var tenant models.Tenant
 		if err := db.First(&tenant, tenantID).Error; err != nil {
+			log.Printf("Update tenant lookup failed: tenant_id=%d error=%v", tenantID, err)
 			c.JSON(http.StatusNotFound, gin.H{"error": "Tenant not found"})
 			return
 		}
@@ -3877,11 +3927,21 @@ func UpdateTenantHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 
 		tenant = tenantPayloadToModel(payload, &tenant)
 		if err := db.Save(&tenant).Error; err != nil {
+			log.Printf(
+				"Update tenant database save failed: tenant_id=%d tenant_name=%q primary_domain=%q bound_domains=%v error=%v",
+				tenantID,
+				tenant.Name,
+				tenant.Domain,
+				jsonArrayToStrings(tenant.BoundDomains),
+				err,
+			)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update tenant"})
 			return
 		}
 		currentDomains := append([]string{normalizeDomain(tenant.Domain)}, jsonArrayToStrings(tenant.BoundDomains)...)
-		_ = syncDomainsToGSC(cfg, diffAddedDomains(previousDomains, currentDomains))
+		addedDomains := diffAddedDomains(previousDomains, currentDomains)
+		gscResults := syncDomainsToGSC(cfg, addedDomains)
+		logTenantGSCSyncResults("update", tenant.ID, addedDomains, gscResults)
 
 		c.JSON(http.StatusOK, tenantToResponse(tenant))
 	}

@@ -346,7 +346,6 @@ onMounted(() => {
             <div class="domain-name-cell">
               <strong>{{ row.domainName }}</strong>
               <small>ID {{ row.id }}</small>
-              <el-tag v-if="row.isBlocked" type="danger" size="small">疑似封杀</el-tag>
             </div>
           </template>
         </el-table-column>

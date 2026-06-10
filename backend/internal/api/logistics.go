@@ -2,8 +2,8 @@ package api
 
 import (
 	"crypto/md5"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -54,14 +54,14 @@ type ecPayStoreListItem struct {
 }
 
 type ecPayStoreListGroup struct {
-	CvsType   string             `json:"CvsType"`
+	CvsType   string               `json:"CvsType"`
 	StoreInfo []ecPayStoreListItem `json:"StoreInfo"`
 }
 
 type ecPayStoreListResponse struct {
-	RtnCode   int                    `json:"RtnCode"`
-	RtnMsg    string                 `json:"RtnMsg"`
-	StoreList []ecPayStoreListGroup  `json:"StoreList"`
+	RtnCode   int                   `json:"RtnCode"`
+	RtnMsg    string                `json:"RtnMsg"`
+	StoreList []ecPayStoreListGroup `json:"StoreList"`
 }
 
 type convenienceStoreCache struct {
@@ -120,14 +120,14 @@ func GetECPayCvsMapConfigHandler(cfg *config.Config) gin.HandlerFunc {
 
 		extraData := fmt.Sprintf("%s|%s", flow, returnURL)
 		fields := map[string]string{
-			"MerchantID":      cfg.ECPayLogisticsMerchantID,
-			"MerchantTradeNo": buildMerchantTradeNo(flow),
-			"LogisticsType":   "CVS",
+			"MerchantID":       cfg.ECPayLogisticsMerchantID,
+			"MerchantTradeNo":  buildMerchantTradeNo(flow),
+			"LogisticsType":    "CVS",
 			"LogisticsSubType": strings.TrimSpace(cfg.ECPayLogisticsSubType),
-			"IsCollection":    "N",
-			"ServerReplyURL":  replyURL,
-			"ExtraData":       extraData,
-			"Device":          "0",
+			"IsCollection":     "N",
+			"ServerReplyURL":   replyURL,
+			"ExtraData":        extraData,
+			"Device":           "0",
 		}
 		fields["CheckMacValue"] = buildECPayCheckMacValue(fields, cfg.ECPayLogisticsHashKey, cfg.ECPayLogisticsHashIV)
 
