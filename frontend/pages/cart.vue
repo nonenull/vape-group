@@ -6,14 +6,41 @@ import { useStoreSeo } from '~/composables/useStoreSeo'
 import { createOrder, fetchProducts } from '~/composables/useStoreApi'
 import { useCartStore } from '~/stores/cart'
 import { useTenantStore } from '~/stores/tenant'
+import type { Product } from '~/types/store'
 
 const router = useRouter()
 const cartStore = useCartStore()
 const tenantStore = useTenantStore()
 const CART_CHECKOUT_FORM_STORAGE_KEY = 'vape_group_cart_checkout_form'
 cartStore.hydrate()
-const { products } = await fetchProducts(1, 200)
-await tenantStore.initTenant()
+const recommendedCatalog = ref<Product[]>([])
+const hasResolvedInitialRecommendations = ref(false)
+
+void tenantStore.initTenant()
+
+const { data: initialRecommendationData, pending: isInitialRecommendationPending } = useAsyncData(
+  'cart-recommendations',
+  async () => {
+    const response = await fetchProducts(1, 200)
+    return response.products
+  },
+  {
+    lazy: true,
+    default: () => [] as Product[],
+  },
+)
+
+watch(initialRecommendationData, (value) => {
+  recommendedCatalog.value = value ?? []
+}, { immediate: true })
+
+watch(isInitialRecommendationPending, (pending) => {
+  if (!pending) {
+    hasResolvedInitialRecommendations.value = true
+  }
+}, { immediate: true })
+
+const showRecommendationLoading = computed(() => isInitialRecommendationPending.value && recommendedCatalog.value.length === 0)
 
 const shippingFee = computed(() => {
   const threshold = tenantStore.platformConfig.freeShippingThreshold || 0
@@ -29,13 +56,13 @@ const checkoutForm = reactive({
 })
 const submitting = ref(false)
 const orderSuccess = ref<{ id: number; total: number } | null>(null)
-const productMap = new Map(products.map((product) => [product.id, product]))
+const productMap = computed(() => new Map(recommendedCatalog.value.map((product) => [product.id, product])))
 const cartProductIds = computed(() => new Set(cartStore.items.map((item) => item.productId)))
 const cartCategoryIds = computed(() => {
   const ids = new Set<number>()
 
   for (const item of cartStore.items) {
-    const product = productMap.get(item.productId)
+    const product = productMap.value.get(item.productId)
     if (!product) {
       continue
     }
@@ -55,11 +82,11 @@ const cartCategoryIds = computed(() => {
 })
 const cartBrands = computed(() => new Set(
   cartStore.items
-    .map((item) => productMap.get(item.productId)?.brand?.trim())
+    .map((item) => productMap.value.get(item.productId)?.brand?.trim())
     .filter(Boolean),
 ))
 const recommendedProducts = computed(() => {
-  const scoredProducts = products
+  const scoredProducts = recommendedCatalog.value
     .filter((product) => !cartProductIds.value.has(product.id))
     .map((product) => {
       let score = 0
@@ -95,7 +122,7 @@ const recommendedProducts = computed(() => {
 const cartVariantOptionsMap = computed(() =>
   new Map(
     cartStore.items.map((item) => {
-      const product = productMap.get(item.productId)
+      const product = productMap.value.get(item.productId)
       const options = product?.skuVariants.map((variant) => {
         const variantLabel = product.optionGroups
           .map((group) => {
@@ -120,12 +147,12 @@ const cartVariantOptionsMap = computed(() =>
 )
 const cartValidation = computed(() =>
   cartStore.items.map((item) => {
-    const product = productMap.get(item.productId)
+    const product = productMap.value.get(item.productId)
     if (!product) {
       return {
         cartItemId: item.id,
-        isInvalid: true,
-        message: '商品已不存在，請移除後再下單。',
+        isInvalid: hasResolvedInitialRecommendations.value,
+        message: hasResolvedInitialRecommendations.value ? '商品已不存在，請移除後再下單。' : '',
       }
     }
 
@@ -152,7 +179,7 @@ const cartValidation = computed(() =>
 const cartValidationMap = computed(() => new Map(cartValidation.value.map((item) => [item.cartItemId, item])))
 const hasInvalidCartItems = computed(() => cartValidation.value.some((item) => item.isInvalid))
 const getCartItemProductPath = (item: { productId: number, name: string }) => {
-  const product = productMap.get(item.productId)
+  const product = productMap.value.get(item.productId)
   return buildProductPath(product ?? { id: item.productId, name: item.name })
 }
 
@@ -444,13 +471,16 @@ const checkout = async () => {
       <NuxtLink class="primary-link" to="/products">去逛商品</NuxtLink>
     </div>
 
-    <section v-if="recommendedProducts.length" class="panel recommendation-section">
+    <section v-if="showRecommendationLoading || recommendedProducts.length" class="panel recommendation-section">
       <div class="recommendation-head">
         <div>
           <p class="recommendation-kicker">For You</p>
           <h2>您可能喜歡</h2>
         </div>
         <NuxtLink to="/products">看更多商品</NuxtLink>
+      </div>
+      <div v-if="showRecommendationLoading" class="recommendation-loading" aria-live="polite">
+        正在載入推薦商品...
       </div>
       <div class="recommendation-grid">
         <ProductCard
@@ -514,6 +544,11 @@ const checkout = async () => {
   display: grid;
   gap: 1rem;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.recommendation-loading {
+  color: var(--wp-text-muted);
+  text-align: center;
 }
 
 .cart-layout {

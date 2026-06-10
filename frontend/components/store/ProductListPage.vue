@@ -4,7 +4,7 @@ import ProductCard from '~/components/store/ProductCard.vue'
 import { createBreadcrumbJsonLd, createItemListJsonLd, useStoreSeo } from '~/composables/useStoreSeo'
 import { fetchBrands, fetchCategories, fetchProducts } from '~/composables/useStoreApi'
 import { buildCategoryPath, buildProductPath } from '~/composables/useProductSlug'
-import type { Product } from '~/types/store'
+import type { Brand, Category, Product } from '~/types/store'
 
 const props = withDefaults(defineProps<{
   initialCategoryId?: number | null
@@ -14,11 +14,9 @@ const props = withDefaults(defineProps<{
   redirectLegacyQuery: false,
 })
 
-const tenantStore = useTenantStore()
-await tenantStore.initTenant()
-
 const route = useRoute()
 const router = useRouter()
+const tenantStore = useTenantStore()
 
 const initialKeyword = typeof route.query.keyword === 'string' ? route.query.keyword : ''
 const initialCategory = typeof route.query.category === 'string'
@@ -35,27 +33,78 @@ const initialLimit = typeof route.query.limit === 'string'
   ? Math.max(Number.parseInt(route.query.limit, 10) || 20, 1)
   : 20
 
-const [initialProductResponse, categories, brands] = await Promise.all([
-  fetchProducts(initialPage, initialLimit, {
-    keyword: initialKeyword,
-    category: initialCategory,
-    brand: initialBrand,
-    sort: initialSort,
-  }),
-  fetchCategories(),
-  fetchBrands(),
-])
-
 const keyword = ref(initialKeyword)
 const category = ref(initialCategory)
 const brand = ref(initialBrand)
 const sortBy = ref(initialSort)
 const currentPage = ref(initialPage)
 const pageSize = ref(initialLimit)
-const products = ref<Product[]>(initialProductResponse.products)
-const totalProducts = ref(initialProductResponse.total)
+const products = ref<Product[]>([])
+const totalProducts = ref(0)
+const categories = ref<Category[]>([])
+const brands = ref<Brand[]>([])
 const tenantName = computed(() => tenantStore.currentTenant?.name ?? 'Vape Group 商城')
 const isApplyingHistoryState = ref(false)
+const isLoadingProducts = ref(false)
+const hasResolvedInitialCatalog = ref(false)
+let latestReloadRequestId = 0
+
+void tenantStore.initTenant()
+
+const initialCatalogKey = `product-list:${route.fullPath}`
+const { data: initialCatalogData, pending: isInitialCatalogPending } = useAsyncData(
+  initialCatalogKey,
+  async () => {
+    const [productResponse, categoryData, brandData] = await Promise.all([
+      fetchProducts(initialPage, initialLimit, {
+        keyword: initialKeyword,
+        category: initialCategory,
+        brand: initialBrand,
+        sort: initialSort,
+      }),
+      fetchCategories(),
+      fetchBrands(),
+    ])
+
+    return {
+      productResponse,
+      categories: categoryData,
+      brands: brandData,
+    }
+  },
+  {
+    lazy: true,
+    default: () => ({
+      productResponse: {
+        products: [] as Product[],
+        total: 0,
+        page: initialPage,
+        limit: initialLimit,
+      },
+      categories: [] as Category[],
+      brands: [] as Brand[],
+    }),
+  },
+)
+
+watch(initialCatalogData, (value) => {
+  if (!value) {
+    return
+  }
+
+  products.value = value.productResponse.products
+  totalProducts.value = value.productResponse.total
+  categories.value = value.categories
+  brands.value = value.brands
+}, { immediate: true })
+
+watch(isInitialCatalogPending, (pending) => {
+  if (!pending) {
+    hasResolvedInitialCatalog.value = true
+  }
+}, { immediate: true })
+
+const showProductLoading = computed(() => isLoadingProducts.value || (isInitialCatalogPending.value && !hasResolvedInitialCatalog.value))
 
 const categoryProductCount = computed(() => {
   const counts = new Map<number, number>()
@@ -74,7 +123,7 @@ const categoryProductCount = computed(() => {
 
 const categoryDescendantIds = computed(() => {
   const byParent = new Map<number | null, number[]>()
-  for (const item of categories) {
+  for (const item of categories.value) {
     const key = item.parentId ?? null
     const bucket = byParent.get(key) ?? []
     bucket.push(item.id)
@@ -98,7 +147,7 @@ const categoryDescendantIds = computed(() => {
     return values
   }
 
-  for (const item of categories) {
+  for (const item of categories.value) {
     collect(item.id)
   }
 
@@ -114,14 +163,14 @@ const selectedCategoryRecord = computed(() => {
   if (!selectedCategoryId.value) {
     return null
   }
-  return categories.find((item) => item.id === selectedCategoryId.value) ?? null
+  return categories.value.find((item) => item.id === selectedCategoryId.value) ?? null
 })
 
 const selectedCategoryName = computed(() => selectedCategoryRecord.value?.name ?? '')
 
 const categoryOptions = computed(() => {
-  const byParent = new Map<number | null, typeof categories[number][]>()
-  const sortedCategories = [...categories].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)
+  const byParent = new Map<number | null, Category[]>()
+  const sortedCategories = [...categories.value].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)
 
   for (const item of sortedCategories) {
     const key = item.parentId ?? null
@@ -152,7 +201,7 @@ const categoryOptions = computed(() => {
 })
 
 const brandOptions = computed(() => {
-  return brands
+  return brands.value
     .map((item) => item.name)
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b, 'zh-Hant'))
@@ -203,14 +252,32 @@ const syncQuery = async (mode: 'push' | 'replace' = 'push') => {
 }
 
 async function reloadProducts() {
-  const response = await fetchProducts(currentPage.value, pageSize.value, {
-    keyword: keyword.value,
-    category: category.value,
-    brand: brand.value,
-    sort: sortBy.value,
-  })
-  products.value = response.products
-  totalProducts.value = response.total
+  const requestId = ++latestReloadRequestId
+  isLoadingProducts.value = true
+
+  try {
+    const response = await fetchProducts(currentPage.value, pageSize.value, {
+      keyword: keyword.value,
+      category: category.value,
+      brand: brand.value,
+      sort: sortBy.value,
+    })
+
+    if (requestId !== latestReloadRequestId) {
+      return
+    }
+
+    products.value = response.products
+    totalProducts.value = response.total
+  } catch (error) {
+    if (requestId === latestReloadRequestId) {
+      throw error
+    }
+  } finally {
+    if (requestId === latestReloadRequestId) {
+      isLoadingProducts.value = false
+    }
+  }
 }
 
 watch([keyword, category, brand, sortBy], () => {
@@ -218,10 +285,15 @@ watch([keyword, category, brand, sortBy], () => {
 })
 
 watch([keyword, category, brand, sortBy, currentPage, pageSize], async () => {
-  await reloadProducts()
-  if (import.meta.client) {
-    await syncQuery(isApplyingHistoryState.value ? 'replace' : 'push')
+  if (isApplyingHistoryState.value) {
+    return
   }
+
+  if (import.meta.client) {
+    await syncQuery()
+  }
+
+  await reloadProducts()
 }, { immediate: false })
 
 watch(totalPages, (value) => {
@@ -350,9 +422,13 @@ useStoreSeo({
   ],
 })
 
-if (props.redirectLegacyQuery && typeof route.query.category === 'string' && selectedCategoryRecord.value) {
+watch(selectedCategoryRecord, async (value) => {
+  if (!props.redirectLegacyQuery || typeof route.query.category !== 'string' || !value) {
+    return
+  }
+
   await navigateTo({
-    path: buildCategoryPath(selectedCategoryRecord.value),
+    path: buildCategoryPath(value),
     query: {
       ...(keyword.value ? { keyword: keyword.value } : {}),
       ...(brand.value ? { brand: brand.value } : {}),
@@ -361,7 +437,7 @@ if (props.redirectLegacyQuery && typeof route.query.category === 'string' && sel
       ...(pageSize.value !== 20 ? { limit: String(pageSize.value) } : {}),
     },
   }, { redirectCode: 301, replace: true })
-}
+}, { immediate: true })
 </script>
 
 <template>
@@ -413,7 +489,7 @@ if (props.redirectLegacyQuery && typeof route.query.category === 'string' && sel
       </div>
     </div>
 
-    <div class="product-grid">
+    <div class="product-grid" :class="{ 'is-loading': showProductLoading }">
       <ProductCard
         v-for="product in paginatedProducts"
         :key="product.id"
@@ -422,7 +498,11 @@ if (props.redirectLegacyQuery && typeof route.query.category === 'string' && sel
       />
     </div>
 
-    <div v-if="filteredProducts.length === 0" class="empty-state panel">
+    <div v-if="showProductLoading" class="loading-state panel" aria-live="polite">
+      正在載入頁面內容...
+    </div>
+
+    <div v-else-if="filteredProducts.length === 0" class="empty-state panel">
       未找到符合條件的商品，請試著清空搜尋或切換分類。
     </div>
 
@@ -461,6 +541,11 @@ if (props.redirectLegacyQuery && typeof route.query.category === 'string' && sel
   gap: 1.25rem;
 }
 
+.loading-state {
+  color: var(--wp-text-muted);
+  text-align: center;
+}
+
 .page-intro {
   display: grid;
   gap: 0.75rem;
@@ -483,6 +568,12 @@ if (props.redirectLegacyQuery && typeof route.query.category === 'string' && sel
 
 .breadcrumb-current {
   color: var(--wp-heading);
+}
+
+.product-grid.is-loading {
+  opacity: 0.55;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
 }
 
 .intro-row {
