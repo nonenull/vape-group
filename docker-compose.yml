@@ -65,9 +65,15 @@ services:
     networks:
       - wp_network
     depends_on:
-      - backend
-      - frontend
-      - admin
+      backend:
+        condition: service_started
+        restart: true
+      frontend:
+        condition: service_started
+        restart: true
+      admin:
+        condition: service_started
+        restart: true
     restart: unless-stopped
 
 networks:
