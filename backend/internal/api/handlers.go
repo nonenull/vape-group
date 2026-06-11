@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -171,6 +172,11 @@ type domainResponse struct {
 	LastCheckedAt *time.Time         `json:"last_checked_at,omitempty"`
 	CreatedAt     time.Time          `json:"created_at"`
 	UpdatedAt     time.Time          `json:"updated_at"`
+}
+
+type goDaddyDomainSummary struct {
+	Domain  string `json:"domain"`
+	Expires string `json:"expires"`
 }
 
 type productPayload struct {
@@ -338,6 +344,43 @@ func godaddyRequest[T any](cfg *config.Config, method, path string, body io.Read
 		return result, err
 	}
 	return result, nil
+}
+
+func fetchAllGoDaddyDomains(cfg *config.Config) ([]goDaddyDomainSummary, error) {
+	const pageSize = 1000
+
+	allDomains := make([]goDaddyDomainSummary, 0)
+	marker := ""
+
+	for {
+		query := url.Values{}
+		query.Set("limit", strconv.Itoa(pageSize))
+		if marker != "" {
+			query.Set("marker", marker)
+		}
+
+		batch, err := godaddyRequest[[]goDaddyDomainSummary](cfg, http.MethodGet, "/v1/domains?"+query.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(batch) == 0 {
+			break
+		}
+
+		allDomains = append(allDomains, batch...)
+		if len(batch) < pageSize {
+			break
+		}
+
+		nextMarker := strings.TrimSpace(batch[len(batch)-1].Domain)
+		if nextMarker == "" || nextMarker == marker {
+			break
+		}
+		marker = nextMarker
+	}
+
+	return allDomains, nil
 }
 
 func resolveDomainIP(serverAddr, domainName string) (string, error) {
@@ -3651,15 +3694,7 @@ func SyncDomainsFromGoDaddyHandler(db *gorm.DB, cfg *config.Config) gin.HandlerF
 		var payload domainSyncPayload
 		_ = c.ShouldBindJSON(&payload)
 
-		var remoteDomains []struct {
-			Domain  string `json:"domain"`
-			Expires string `json:"expires"`
-		}
-		var err error
-		remoteDomains, err = godaddyRequest[[]struct {
-			Domain  string `json:"domain"`
-			Expires string `json:"expires"`
-		}](cfg, http.MethodGet, "/v1/domains", nil)
+		remoteDomains, err := fetchAllGoDaddyDomains(cfg)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
