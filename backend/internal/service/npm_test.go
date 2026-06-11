@@ -2,6 +2,43 @@ package service
 
 import "testing"
 
+func TestNormalizeNPMDomainsAddsWWWVariant(t *testing.T) {
+	domains := normalizeNPMDomains("example.com", []string{"shop.example.com"})
+
+	expected := []string{
+		"example.com",
+		"www.example.com",
+		"shop.example.com",
+		"www.shop.example.com",
+	}
+	if len(domains) != len(expected) {
+		t.Fatalf("expected %d domains, got %d: %#v", len(expected), len(domains), domains)
+	}
+	for index, item := range expected {
+		if domains[index] != item {
+			t.Fatalf("expected domains[%d] to be %q, got %q", index, item, domains[index])
+		}
+	}
+}
+
+func TestNormalizeNPMDomainsSkipsWWWForLocalhostAndIPs(t *testing.T) {
+	domains := normalizeNPMDomains("tenant1.localhost", []string{"127.0.0.1", "www.example.com"})
+
+	expected := []string{
+		"tenant1.localhost",
+		"127.0.0.1",
+		"www.example.com",
+	}
+	if len(domains) != len(expected) {
+		t.Fatalf("expected %d domains, got %d: %#v", len(expected), len(domains), domains)
+	}
+	for index, item := range expected {
+		if domains[index] != item {
+			t.Fatalf("expected domains[%d] to be %q, got %q", index, item, domains[index])
+		}
+	}
+}
+
 func TestBuildBaseUpdatePayloadForcesSSLWhenReissuingCertificate(t *testing.T) {
 	service := &NPMService{}
 	host := &npmProxyHost{

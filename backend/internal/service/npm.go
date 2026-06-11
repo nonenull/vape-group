@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -187,20 +188,54 @@ func (s *NPMService) doJSON(method, path string, payload any, out any) error {
 }
 
 func normalizeNPMDomains(primaryDomain string, boundDomains []string) []string {
-	seen := make(map[string]struct{}, len(boundDomains)+1)
-	result := make([]string, 0, len(boundDomains)+1)
+	seen := make(map[string]struct{}, (len(boundDomains)+1)*2)
+	result := make([]string, 0, (len(boundDomains)+1)*2)
 	for _, candidate := range append([]string{primaryDomain}, boundDomains...) {
 		domain := strings.ToLower(strings.TrimSpace(candidate))
 		if domain == "" {
 			continue
 		}
-		if _, exists := seen[domain]; exists {
-			continue
+		for _, expanded := range expandNPMDomainAliases(domain) {
+			if _, exists := seen[expanded]; exists {
+				continue
+			}
+			seen[expanded] = struct{}{}
+			result = append(result, expanded)
 		}
-		seen[domain] = struct{}{}
-		result = append(result, domain)
 	}
 	return result
+}
+
+func expandNPMDomainAliases(domain string) []string {
+	normalized := strings.ToLower(strings.TrimSpace(domain))
+	if normalized == "" {
+		return nil
+	}
+
+	result := []string{normalized}
+	if shouldAddWWWVariant(normalized) {
+		result = append(result, "www."+normalized)
+	}
+	return result
+}
+
+func shouldAddWWWVariant(domain string) bool {
+	if domain == "" {
+		return false
+	}
+	if strings.HasPrefix(domain, "www.") {
+		return false
+	}
+	if net.ParseIP(domain) != nil {
+		return false
+	}
+	if !strings.Contains(domain, ".") {
+		return false
+	}
+	if strings.HasSuffix(domain, ".localhost") || domain == "localhost" {
+		return false
+	}
+	return true
 }
 
 func appendUniqueDomain(values []string, domain string) []string {
