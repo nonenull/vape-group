@@ -4,8 +4,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
-	"errors"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -42,11 +42,12 @@ func TenantMiddleware(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
+		canonicalPrimaryDomain := canonicalTenantDomain(tenant.Domain)
 		c.Set("tenant_matched_domain", matchedDomain)
-		c.Set("tenant_primary_domain", tenant.Domain)
+		c.Set("tenant_primary_domain", canonicalPrimaryDomain)
 
-		if shouldRedirectToPrimaryDomain(c, matchedDomain, tenant.Domain) {
-			redirectURL := buildPrimaryDomainRedirect(c, tenant.Domain)
+		if shouldRedirectToPrimaryDomain(c, matchedDomain, canonicalPrimaryDomain) {
+			redirectURL := buildPrimaryDomainRedirect(c, canonicalPrimaryDomain)
 			c.Redirect(http.StatusMovedPermanently, redirectURL)
 			c.Abort()
 			return
@@ -118,6 +119,17 @@ func alternateTenantDomain(domain string) string {
 	}
 	if strings.HasPrefix(normalized, "www.") {
 		return strings.TrimPrefix(normalized, "www.")
+	}
+	return "www." + normalized
+}
+
+func canonicalTenantDomain(domain string) string {
+	normalized := strings.TrimSpace(strings.ToLower(domain))
+	if normalized == "" {
+		return ""
+	}
+	if strings.HasPrefix(normalized, "www.") {
+		return normalized
 	}
 	return "www." + normalized
 }
