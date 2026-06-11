@@ -2483,6 +2483,22 @@ func ensureSuccessfulNPMResult(result *service.NPMResult) error {
 	return errors.New(message)
 }
 
+func shouldBlockTenantDomainSaveForNPMResult(result *service.NPMResult) bool {
+	if result == nil {
+		return true
+	}
+
+	status := strings.ToLower(strings.TrimSpace(result.Status))
+	if status == "error" {
+		return true
+	}
+	if status == "success" {
+		return !result.NPMUpdated
+	}
+
+	return false
+}
+
 func orderToResponse(order models.Order, items []models.OrderItem, productNameByID map[uint]string) orderResponse {
 	result := make([]orderItemResponse, 0, len(items))
 	for _, item := range items {
@@ -4052,26 +4068,27 @@ func AddTenantDomainHandler(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		tenant.BoundDomains = stringSliceToJSONArray(updatedBound)
-		if err := db.Save(&tenant).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bind tenant domain"})
-			return
-		}
-
 		npmProxyHostID := jsonUint(tenant.ThemeConfig, "npmProxyHostId")
 		var npmResult *service.NPMResult
 		var syncErr error
 		if npmProxyHostID != nil && *npmProxyHostID > 0 {
-			npmResult, syncErr = syncTenantDomainsToNPMByProxyHostID(cfg, *npmProxyHostID, tenant.Domain, jsonArrayToStrings(tenant.BoundDomains))
+			npmResult, syncErr = syncTenantDomainsToNPMByProxyHostID(cfg, *npmProxyHostID, tenant.Domain, updatedBound)
 		} else {
-			npmResult, syncErr = syncTenantDomainsToNPM(cfg, tenant.Domain, jsonArrayToStrings(tenant.BoundDomains))
+			npmResult, syncErr = syncTenantDomainsToNPM(cfg, tenant.Domain, updatedBound)
 		}
 		if syncErr != nil {
-			npmResult = &service.NPMResult{
-				Status:     "error",
-				Message:    syncErr.Error(),
-				NPMUpdated: false,
-			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": syncErr.Error()})
+			return
+		}
+		if shouldBlockTenantDomainSaveForNPMResult(npmResult) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": firstNonEmptyString(strings.TrimSpace(npmResult.Message), "NPM sync failed")})
+			return
+		}
+
+		tenant.BoundDomains = stringSliceToJSONArray(updatedBound)
+		if err := db.Save(&tenant).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bind tenant domain"})
+			return
 		}
 		gscResults := syncDomainsToGSC(cfg, []string{domain})
 
