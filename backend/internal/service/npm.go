@@ -22,12 +22,12 @@ type NPMService struct {
 }
 
 type NPMResult struct {
-	Status         string         `json:"status"`
-	Message        string         `json:"message,omitempty"`
-	NPMUpdated     bool           `json:"npm_updated"`
-	ProxyHostID    any            `json:"proxy_host_id,omitempty"`
-	UpdatedDomains []string       `json:"updated_domains,omitempty"`
-	SSLResult      *NPMSSLResult  `json:"ssl_result,omitempty"`
+	Status         string        `json:"status"`
+	Message        string        `json:"message,omitempty"`
+	NPMUpdated     bool          `json:"npm_updated"`
+	ProxyHostID    any           `json:"proxy_host_id,omitempty"`
+	UpdatedDomains []string      `json:"updated_domains,omitempty"`
+	SSLResult      *NPMSSLResult `json:"ssl_result,omitempty"`
 }
 
 type NPMSSLResult struct {
@@ -41,24 +41,24 @@ type npmTokenResponse struct {
 }
 
 type npmProxyHost struct {
-	ID                    any                    `json:"id"`
-	DomainNames           []string               `json:"domain_names"`
-	ForwardScheme         string                 `json:"forward_scheme"`
-	ForwardHost           string                 `json:"forward_host"`
-	ForwardPort           any                    `json:"forward_port"`
-	CertificateID         any                    `json:"certificate_id"`
-	SSLForced             bool                   `json:"ssl_forced"`
-	HTTP2Support          bool                   `json:"http2_support"`
-	HSTSEnabled           bool                   `json:"hsts_enabled"`
-	HSTSSubdomains        bool                   `json:"hsts_subdomains"`
-	BlockExploits         bool                   `json:"block_exploits"`
-	CachingEnabled        bool                   `json:"caching_enabled"`
-	AllowWebsocketUpgrade bool                   `json:"allow_websocket_upgrade"`
-	TrustForwardedProto   bool                   `json:"trust_forwarded_proto"`
-	AccessListID          any                    `json:"access_list_id"`
-	Meta                  map[string]any         `json:"meta"`
-	Locations             []map[string]any       `json:"locations"`
-	AdvancedConfig        string                 `json:"advanced_config"`
+	ID                    any              `json:"id"`
+	DomainNames           []string         `json:"domain_names"`
+	ForwardScheme         string           `json:"forward_scheme"`
+	ForwardHost           string           `json:"forward_host"`
+	ForwardPort           any              `json:"forward_port"`
+	CertificateID         any              `json:"certificate_id"`
+	SSLForced             bool             `json:"ssl_forced"`
+	HTTP2Support          bool             `json:"http2_support"`
+	HSTSEnabled           bool             `json:"hsts_enabled"`
+	HSTSSubdomains        bool             `json:"hsts_subdomains"`
+	BlockExploits         bool             `json:"block_exploits"`
+	CachingEnabled        bool             `json:"caching_enabled"`
+	AllowWebsocketUpgrade bool             `json:"allow_websocket_upgrade"`
+	TrustForwardedProto   bool             `json:"trust_forwarded_proto"`
+	AccessListID          any              `json:"access_list_id"`
+	Meta                  map[string]any   `json:"meta"`
+	Locations             []map[string]any `json:"locations"`
+	AdvancedConfig        string           `json:"advanced_config"`
 }
 
 type npmPayloadVariant struct {
@@ -297,24 +297,34 @@ func (s *NPMService) buildBaseUpdatePayload(host *npmProxyHost, domains []string
 	}
 
 	return map[string]any{
-		"domain_names":             domains,
-		"forward_scheme":           firstNonEmptyString(host.ForwardScheme, "http"),
-		"forward_host":             host.ForwardHost,
-		"forward_port":             host.ForwardPort,
-		"certificate_id":           certificateID,
-		"ssl_forced":               host.SSLForced,
-		"http2_support":            host.HTTP2Support,
-		"hsts_enabled":             host.HSTSEnabled,
-		"hsts_subdomains":          host.HSTSSubdomains,
-		"block_exploits":           host.BlockExploits,
-		"caching_enabled":          host.CachingEnabled,
-		"allow_websocket_upgrade":  host.AllowWebsocketUpgrade,
-		"trust_forwarded_proto":    host.TrustForwardedProto,
-		"access_list_id":           host.AccessListID,
-		"meta":                     meta,
-		"locations":                host.Locations,
-		"advanced_config":          host.AdvancedConfig,
+		"domain_names":            domains,
+		"forward_scheme":          firstNonEmptyString(host.ForwardScheme, "http"),
+		"forward_host":            host.ForwardHost,
+		"forward_port":            host.ForwardPort,
+		"certificate_id":          certificateID,
+		"ssl_forced":              shouldForceSSL(host, mode, certificateOverride),
+		"http2_support":           host.HTTP2Support,
+		"hsts_enabled":            host.HSTSEnabled,
+		"hsts_subdomains":         host.HSTSSubdomains,
+		"block_exploits":          host.BlockExploits,
+		"caching_enabled":         host.CachingEnabled,
+		"allow_websocket_upgrade": host.AllowWebsocketUpgrade,
+		"trust_forwarded_proto":   host.TrustForwardedProto,
+		"access_list_id":          host.AccessListID,
+		"meta":                    meta,
+		"locations":               host.Locations,
+		"advanced_config":         host.AdvancedConfig,
 	}
+}
+
+func shouldForceSSL(host *npmProxyHost, mode NPMUpdateMode, certificateOverride any) bool {
+	if host != nil && host.SSLForced {
+		return true
+	}
+	if mode == NPMUpdateModeReissueSSL {
+		return true
+	}
+	return certificateOverride != nil
 }
 
 func copyPayload(source map[string]any, keys ...string) map[string]any {
