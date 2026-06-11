@@ -722,7 +722,7 @@ onMounted(async () => {
               />
             </el-select>
           </el-form-item>
-          <el-form-item class="full" label="綁定網域">
+          <el-form-item v-if="isCreating" class="full" label="綁定網域">
             <el-select
               v-model="tenantForm.boundDomains"
               :disabled="isViewMode"
