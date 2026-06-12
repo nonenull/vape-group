@@ -20,6 +20,15 @@ const [{ products }, categories, brands] = await Promise.all([
 const tenant = tenantStore.currentTenant
 const tenantName = tenant?.name ?? 'Vape Group 商城'
 const categoryMap = new Map(categories.map((category) => [category.id, category]))
+const childCategoryIdsByParent = categories.reduce((map, category) => {
+  if (category.parentId == null) {
+    return map
+  }
+  const existing = map.get(category.parentId) ?? []
+  existing.push(category.id)
+  map.set(category.parentId, existing)
+  return map
+}, new Map<number, number[]>())
 
 const primaryBrand = computed(() => {
   if (!tenant?.primaryBrandId) {
@@ -116,34 +125,199 @@ const featuredCategories = computed(() => {
 })
 
 const configuredPrimaryCategoryCards = [
-  { key: 'device', title: '設備', keywords: ['煙桿', '烟杆', '主機', '主机', '設備', 'device', 'kit'] },
-  { key: 'pod', title: '煙彈', keywords: ['煙彈', '烟弹', 'pod', '彈', '弹'] },
-  { key: 'disposable', title: '拋棄式', keywords: ['拋棄式', '一次性', '電子煙', 'disposable'] },
+  {
+    key: 'device',
+    title: '設備',
+    includeKeywords: ['煙桿', '烟杆', '主機', '主机', '設備', 'device', 'kit', '套裝', '套装', '注油設備', 'max'],
+    excludeKeywords: ['煙彈', '烟弹', 'pod', '彈', '弹', '拋棄式', '抛弃式', '一次性', '煙油', '烟油'],
+  },
+  {
+    key: 'pod',
+    title: '煙彈',
+    includeKeywords: ['煙彈', '烟弹', 'pod', '彈', '弹'],
+    excludeKeywords: ['主機', '主机', '煙桿', '烟杆', '拋棄式', '抛弃式', '一次性'],
+  },
+  {
+    key: 'disposable',
+    title: '拋棄式',
+    includeKeywords: ['拋棄式', '抛弃式', '一次性', 'disposable', '電子煙'],
+    excludeKeywords: ['主機', '主机', '煙桿', '烟杆', '煙彈', '烟弹', 'pod', '套裝', '套装'],
+  },
 ] as const
 
-function findMatchingCategoryId(keywords: readonly string[]) {
-  const match = categories.find((category) => {
-    const categoryName = category.name.trim().toLowerCase()
-    return keywords.some((keyword) => categoryName.includes(keyword.toLowerCase()))
+function normalizeText(value?: string | null) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function getFirstKeywordIndex(text: string, keywords: readonly string[]) {
+  let firstIndex = Number.POSITIVE_INFINITY
+  for (const keyword of keywords) {
+    const index = text.indexOf(normalizeText(keyword))
+    if (index >= 0 && index < firstIndex) {
+      firstIndex = index
+    }
+  }
+  return firstIndex
+}
+
+function categoryNameIncludesKeyword(categoryId: number, keywords: readonly string[]) {
+  const pending = [categoryId]
+  const visited = new Set<number>()
+
+  while (pending.length) {
+    const currentId = pending.shift()
+    if (currentId == null || visited.has(currentId)) {
+      continue
+    }
+    visited.add(currentId)
+
+    const currentCategory = categoryMap.get(currentId)
+    const categoryName = normalizeText(currentCategory?.name)
+    if (categoryName && keywords.some((keyword) => categoryName.includes(normalizeText(keyword)))) {
+      return true
+    }
+
+    const parentId = currentCategory?.parentId
+    if (parentId != null) {
+      pending.push(parentId)
+    }
+  }
+
+  return false
+}
+
+function getPrimaryCategoryGroupKey(
+  product: (typeof products)[number],
+) {
+  const productName = normalizeText(product.name)
+  const productCategory = normalizeText(product.category)
+  const productCategoryIds = getCategoryIds(product)
+  let bestGroupKey: string | null = null
+  let bestScore = Number.NEGATIVE_INFINITY
+  let bestPriority = Number.POSITIVE_INFINITY
+
+  configuredPrimaryCategoryCards.forEach((group, priority) => {
+    const categoryInclude = productCategoryIds.some((categoryId) => categoryNameIncludesKeyword(categoryId, group.includeKeywords)) ||
+      group.includeKeywords.some((keyword) => productCategory.includes(normalizeText(keyword)))
+    const categoryExclude = productCategoryIds.some((categoryId) => categoryNameIncludesKeyword(categoryId, group.excludeKeywords)) ||
+      group.excludeKeywords.some((keyword) => productCategory.includes(normalizeText(keyword)))
+    const includeIndex = getFirstKeywordIndex(productName, group.includeKeywords)
+    const excludeIndex = getFirstKeywordIndex(productName, group.excludeKeywords)
+
+    let score = Number.NEGATIVE_INFINITY
+    if (categoryInclude && !categoryExclude) {
+      score = 200
+      if (includeIndex !== Number.POSITIVE_INFINITY) {
+        score += 100 - Math.min(includeIndex, 90)
+      }
+      if (excludeIndex < includeIndex) {
+        score -= 120
+      } else if (excludeIndex !== Number.POSITIVE_INFINITY && includeIndex === Number.POSITIVE_INFINITY) {
+        score -= 120
+      }
+    } else if (includeIndex !== Number.POSITIVE_INFINITY) {
+      score = 100 - Math.min(includeIndex, 90)
+      if (excludeIndex < includeIndex) {
+        score -= 120
+      } else if (excludeIndex !== Number.POSITIVE_INFINITY) {
+        score -= 10
+      }
+    }
+
+    if (score <= 0) {
+      return
+    }
+    if (score > bestScore || (score === bestScore && priority < bestPriority)) {
+      bestGroupKey = group.key
+      bestScore = score
+      bestPriority = priority
+    }
   })
-  return match?.id ?? null
+
+  return bestGroupKey
+}
+
+function collectAncestorCategoryIds(categoryId: number | null | undefined) {
+  const result: number[] = []
+  let currentId = categoryId ?? null
+
+  while (currentId != null) {
+    const current = categoryMap.get(currentId)
+    if (!current) {
+      break
+    }
+    result.push(current.id)
+    currentId = current.parentId ?? null
+  }
+
+  return result
+}
+
+function getPrimaryBrandRootCategoryIds() {
+  const brandName = normalizeText(primaryBrand.value?.name)
+  if (!brandName) {
+    return []
+  }
+
+  return categories
+    .filter((category) => normalizeText(category.name).includes(brandName))
+    .map((category) => {
+      const ancestors = collectAncestorCategoryIds(category.id)
+      return ancestors.length ? ancestors[ancestors.length - 1] : category.id
+    })
+    .filter((id, index, list) => list.indexOf(id) === index)
+}
+
+function getPrimaryBrandRelevantCategoryIds() {
+  const rootIds = new Set<number>()
+  for (const rootId of getPrimaryBrandRootCategoryIds()) {
+    rootIds.add(rootId)
+    const pending = [...(childCategoryIdsByParent.get(rootId) ?? [])]
+    while (pending.length) {
+      const currentId = pending.shift()
+      if (currentId == null || rootIds.has(currentId)) {
+        continue
+      }
+      rootIds.add(currentId)
+      pending.push(...(childCategoryIdsByParent.get(currentId) ?? []))
+    }
+  }
+  return rootIds
 }
 
 const primaryCategoryCards = computed(() =>
-  configuredPrimaryCategoryCards.map((group) => {
-    const categoryId = findMatchingCategoryId(group.keywords)
-    const items = categoryId == null
-      ? []
-      : primaryBrandProducts.value
-        .filter((product) => getCategoryIds(product).includes(categoryId))
-        .slice(0, 4)
-    return {
-      key: group.key,
-      title: group.title,
-      categoryId,
-      items,
+  {
+    const relevantCategoryIds = getPrimaryBrandRelevantCategoryIds()
+    const groupedProducts = new Map<string, (typeof products)[number][]>()
+
+    for (const product of primaryBrandProducts.value) {
+      const productCategoryIds = getCategoryIds(product)
+      const belongsToPrimaryBrandTree = !relevantCategoryIds.size ||
+        productCategoryIds.some((categoryId) => relevantCategoryIds.has(categoryId))
+
+      if (!belongsToPrimaryBrandTree) {
+        continue
+      }
+
+      const groupKey = getPrimaryCategoryGroupKey(product)
+      if (!groupKey) {
+        continue
+      }
+
+      const items = groupedProducts.get(groupKey) ?? []
+      items.push(product)
+      groupedProducts.set(groupKey, items)
     }
-  }),
+
+    return configuredPrimaryCategoryCards.map((group) => {
+      const items = (groupedProducts.get(group.key) ?? []).slice(0, 4)
+      return {
+        key: group.key,
+        title: group.title,
+        items,
+      }
+    })
+  },
 )
 
 const defaultSections: HomeSectionConfig[] = [
