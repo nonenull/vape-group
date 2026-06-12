@@ -145,6 +145,8 @@ const configuredPrimaryCategoryCards = [
   },
 ] as const
 
+const hiddenPrimaryCategoryKeywords = ['煙油', '烟油', 'oil', '尼古丁鹽', '尼古丁盐'] as const
+
 function normalizeText(value?: string | null) {
   return String(value ?? '').trim().toLowerCase()
 }
@@ -186,9 +188,30 @@ function categoryNameIncludesKeyword(categoryId: number, keywords: readonly stri
   return false
 }
 
+function productMatchesHiddenPrimaryCategory(product: (typeof products)[number]) {
+  const textParts = [
+    product.name,
+    product.category,
+    product.brand,
+    product.description,
+    product.longDescription,
+    ...product.specs.map((item) => item.value),
+  ]
+  const productText = normalizeText(textParts.filter(Boolean).join(' '))
+  if (hiddenPrimaryCategoryKeywords.some((keyword) => productText.includes(normalizeText(keyword)))) {
+    return true
+  }
+
+  return getCategoryIds(product).some((categoryId) => categoryNameIncludesKeyword(categoryId, hiddenPrimaryCategoryKeywords))
+}
+
 function getPrimaryCategoryGroupKey(
   product: (typeof products)[number],
 ) {
+  if (productMatchesHiddenPrimaryCategory(product)) {
+    return null
+  }
+
   const productName = normalizeText(product.name)
   const productCategory = normalizeText(product.category)
   const productCategoryIds = getCategoryIds(product)
